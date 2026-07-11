@@ -40,7 +40,7 @@ app.get('/experiments', async (c) => {
 app.get('/comments', async (c) => {
   try {
     const dataPath = path.resolve(process.cwd(), '../data/comments.txt');
-    const nodeStream = createReadStream(dataPath);
+    const nodeStream = createReadStream(dataPath, { start: 0, end: 10240 }); // Limit to 10KB to avoid crashing the browser
     
     // Convert Node stream to Web stream manually for Astro
     const webStream = new ReadableStream({
@@ -62,7 +62,7 @@ app.get('/comments', async (c) => {
 
     return new Response(webStream, {
       headers: {
-        'Content-Type': 'text/plain',
+        'Content-Type': 'text/plain; charset=utf-8',
       },
     });
   } catch (e) {
