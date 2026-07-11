@@ -1,0 +1,20 @@
+{
+  "name": "webapp",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.0.2",
+    "@hono/zod-validator": "^0.8.0",
+    "astro": "^7.0.7",
+    "hono": "^4.12.29"
+  }
+}
