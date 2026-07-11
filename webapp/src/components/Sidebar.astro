@@ -1,0 +1,32 @@
+---
+interface Chapter {
+  id: string;
+  data: {
+    order: number;
+    title: string;
+  };
+}
+
+interface Props {
+  chapters: Chapter[];
+}
+
+const { chapters } = Astro.props;
+---
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>Production-Grade Rust</h1>
+    <div class="version">Hyperscale Architecture</div>
+    <div class="rust-badge">2026 Edition</div>
+  </div>
+  <nav class="nav-section">
+    <div class="nav-section-title">Chapters</div>
+    {chapters.map(chapter => (
+      <a href={`#chapter-${chapter.data.order}`} class="nav-item" data-chapter-id={`chapter-${chapter.data.order}`}>
+        <span class="chapter-num">{chapter.data.order.toString().padStart(2, '0')}</span>
+        {chapter.data.title}
+      </a>
+    ))}
+  </nav>
+</div>
