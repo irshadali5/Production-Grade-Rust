@@ -12,6 +12,27 @@ interface Props {
 }
 
 const { chapters } = Astro.props;
+
+// Define meaningful units/categories
+const categories = [
+  { name: 'Foundations', min: 1, max: 2 },
+  { name: 'Core Infrastructure', min: 3, max: 6 },
+  { name: 'Reliability & Observability', min: 7, max: 10 },
+  { name: 'Security & Systems', min: 11, max: 14 },
+  { name: 'AI & Scaling', min: 15, max: 17 },
+  { name: 'High Performance', min: 18, max: 21 },
+  { name: 'Advanced Concepts', min: 22, max: 26 },
+  { name: 'Extreme Scale & Kernel', min: 27, max: 32 },
+];
+
+const groupedChapters = categories.map((cat) => {
+  return {
+    name: cat.name,
+    chapters: chapters.filter(
+      (c) => c.data.order >= cat.min && c.data.order <= cat.max
+    ),
+  };
+});
 ---
 
 <div class="sidebar">
@@ -20,13 +41,26 @@ const { chapters } = Astro.props;
     <div class="version">Hyperscale Architecture</div>
     <div class="rust-badge">2026 Edition</div>
   </div>
+  
   <nav class="nav-section">
-    <div class="nav-section-title">Chapters</div>
-    {chapters.map(chapter => (
-      <a href={`#chapter-${chapter.data.order}`} class="nav-item" data-chapter-id={`chapter-${chapter.data.order}`}>
-        <span class="chapter-num">{chapter.data.order.toString().padStart(2, '0')}</span>
-        {chapter.data.title}
-      </a>
+    {groupedChapters.map(group => (
+      group.chapters.length > 0 && (
+        <div class="category-group">
+          <div class="nav-section-title">{group.name}</div>
+          {group.chapters.map(chapter => (
+            <a href={`#chapter-${chapter.data.order}`} class="nav-item" data-chapter-id={`chapter-${chapter.data.order}`}>
+              <span class="chapter-num">{chapter.data.order.toString().padStart(2, '0')}</span>
+              {chapter.data.title.replace('Intensive Deep Dive: ', '')}
+            </a>
+          ))}
+        </div>
+      )
     ))}
   </nav>
 </div>
+
+<style>
+  .category-group {
+    margin-bottom: 24px;
+  }
+</style>
