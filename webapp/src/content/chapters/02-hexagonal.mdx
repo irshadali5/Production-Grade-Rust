@@ -16,6 +16,32 @@ To construct a hyperscale system, we must implement **Hexagonal Architecture**. 
 
 Crucially, the Domain must be **Pure**. It must have absolutely zero knowledge of HTTP, JSON, Postgres, or Kafka. It communicates with the outside world exclusively through abstract mathematical interfaces known as **Ports**.
 
+```mermaid
+flowchart TD
+    subgraph Infrastructure Layer
+    HTTP[HTTP API / Axum]
+    DB[(PostgreSQL)]
+    MQ[[Kafka / RabbitMQ]]
+    end
+
+    subgraph Application Layer
+    Usecases[Application Services / Usecases]
+    end
+
+    subgraph Domain Layer
+    Entities[Pure Rust Structs & Traits]
+    end
+
+    HTTP -->|Uses| Usecases
+    Usecases -->|Orchestrates| Entities
+    
+    %% Dependency Inversion
+    Entities -.->|Defines Port| RepoTrait(UserRepository Trait)
+    DB -.->|Implements Adapter| RepoTrait
+    MQ -.->|Implements Adapter| EventTrait(EventPublisher Trait)
+    Entities -.->|Defines Port| EventTrait
+```
+
 # 3. Defining Ports with Rust Traits
 
 In Rust, a Port is defined using a `trait`. 

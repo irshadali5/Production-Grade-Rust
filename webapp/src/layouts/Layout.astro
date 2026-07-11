@@ -20,7 +20,39 @@ const {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title}</title>
-  </head>
+		
+		<!-- Mermaid.js Visualization Support -->
+		<script is:inline src="https://cdn.jsdelivr.net/npm/mermaid@10.8.0/dist/mermaid.min.js"></script>
+		<script is:inline>
+			document.addEventListener('DOMContentLoaded', () => {
+				mermaid.initialize({
+					startOnLoad: true,
+					theme: 'dark',
+					fontFamily: 'Inter, sans-serif'
+				});
+				
+				// Re-initialize mermaid diagrams when navigation changes (since we have a SPA-like navigation script)
+				const observer = new MutationObserver((mutations) => {
+					mutations.forEach((mutation) => {
+						if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+							const target = mutation.target;
+							if (target.classList.contains('active')) {
+								// Run mermaid init on the newly active section if it contains unrendered mermaid blocks
+								const unrendered = target.querySelectorAll('.mermaid:not([data-processed="true"])');
+								if (unrendered.length > 0) {
+									mermaid.init(undefined, unrendered);
+								}
+							}
+						}
+					});
+				});
+
+				document.querySelectorAll('.chapter').forEach(sec => {
+					observer.observe(sec, { attributes: true });
+				});
+			});
+		</script>
+	</head>
   <body>
     <slot />
   </body>

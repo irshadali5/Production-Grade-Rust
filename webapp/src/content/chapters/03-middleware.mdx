@@ -10,6 +10,30 @@ In a hyperscale Rust application, Axum handles HTTP routing, but the true power 
 
 A `Service` represents an asynchronous function that takes a Request and returns a Response (or an Error). Every single piece of your application—from a global Rate Limiter down to the final Axum endpoint handler—is mathematically just a `Service`. By nesting these Services inside one another like Russian nesting dolls, we construct a **Middleware Stack**.
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Limit as ConcurrencyLimiter (Service)
+    participant Auth as AuthMiddleware (Service)
+    participant Handler as Axum Handler (Service)
+    
+    Client->>Limit: HTTP Request
+    
+    rect rgb(20, 40, 20)
+    Note over Limit: poll_ready() - checks available threads
+    Limit->>Auth: pass request
+    end
+    
+    rect rgb(40, 20, 40)
+    Note over Auth: poll_ready() - reads JWT
+    Auth->>Handler: pass request
+    end
+    
+    Handler-->>Auth: HTTP Response
+    Auth-->>Limit: HTTP Response
+    Limit-->>Client: HTTP Response
+```
+
 # 2. Deconstructing the `tower::Service` Trait
 
 To understand how to control traffic at the architectural level, you must understand the exact memory layout of the `Service` trait.
@@ -31,6 +55,7 @@ pub trait Service<Request> {
 This trait defines a profound two-step execution process:
 1. **`poll_ready`**: Before the server even accepts the incoming TCP packet, it calls `poll_ready`. This function returns `Poll::Ready` if the service has enough resources (RAM, DB connections, Tokio threads) to handle the request. If the server is overloaded, it returns `Poll::Pending`, mathematically halting execution and asserting **Backpressure** back to the OS socket.
 2. **`call`**: Once `poll_ready` is successful, `call` is invoked. It takes ownership of the Request, begins execution, and immediately returns a `Future` containing the eventual Response.
+
 
 # 3. Architecting a Custom Concurrency Limiter
 
@@ -78,7 +103,6 @@ where
         let current = self.current_concurrent.load(Ordering::Acquire);
         if current >= self.max_concurrent {
             // BACKPRESSURE: The system is full. We physically reject the connection.
-            // In a real implementation, we would register a Waker to try again later.
             return Poll::Pending; 
         }
         
