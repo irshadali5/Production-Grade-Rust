@@ -113,3 +113,15 @@ async fn main() {
 ```
 
 By combining `hyper` for zero-copy socket streaming and `tower` for mathematical queueing constraints, we have built a gateway capable of shielding our internal microservices from massive traffic spikes, all while consuming less than 50MB of RAM.
+
+## 4. Production Post-Mortem: Ephemeral Port Exhaustion
+A proxy architecture was load-testing perfectly at 20,000 requests per second. Suddenly, all new requests began failing with `Cannot assign requested address (OS error 99)`. 
+**The Fix:** When a reverse proxy makes an outgoing TCP connection to a downstream service, the Linux Kernel assigns a random "ephemeral port" to the outgoing socket. A standard Linux server only has ~28,000 ephemeral ports available (`sysctl net.ipv4.ip_local_port_range`). Even after a TCP connection closes, the kernel holds the port in a `TIME_WAIT` state for 60 seconds to catch stray packets. 20,000 req/sec * 60 seconds = 1.2 million ports needed. The OS instantly ran out of ports. You must enable `net.ipv4.tcp_tw_reuse = 1` at the OS level, or implement aggressive TCP Connection Pooling in `hyper` to reuse existing open sockets for multiple HTTP requests, completely bypassing the OS ephemeral port limit.
+
+## 5. Advanced Mathematical Physics: The Hyper State Machine
+How does `hyper` stream gigabytes of video data through the proxy without consuming RAM? It uses the `hyper::Body` trait, which represents an asynchronous stream of `Bytes` (reference-counted memory blocks). Under the hood, `hyper` does not allocate a `String` or `Vec<u8>` for the incoming payload. It acts as a mathematical State Machine bridging two `epoll` file descriptors. When a chunk of TCP data arrives on the public internet socket, `hyper` parses the HTTP headers in a fixed-size buffer, zeroes it out, and then pipes the physical memory pages of the payload directly to the internal VPC socket. Memory allocation never scales linearly with the payload size. It remains `O(1)`, capped at the size of the internal chunk buffer.
+
+## 6. The Architect's Challenge
+> **Scenario:** Your gateway is using a `tower` Concurrency Limiter set to `10_000`. You observe that during a DDoS attack, exactly 10,000 requests are being processed, but an additional 50,000 requests are hanging completely, keeping the TCP connection open indefinitely, slowly burning through your available OS file descriptors until the server crashes. Why?
+
+*Hint: The `ConcurrencyLimitLayer` uses an internal Semaphore to limit active requests. However, if 10,000 requests acquire the semaphore, the 10,001st request is placed into an unbounded pending queue. It waits forever to acquire the semaphore. Because the TCP socket is already accepted by Tokio, it stays open. You must explicitly pair the `ConcurrencyLimitLayer` with a `LoadShedLayer` (which instantly returns a 503 if the semaphore queue is full) or a `BufferLayer` with a strictly defined maximum capacity to enforce mathematical backpressure.*

@@ -74,3 +74,15 @@ pub fn execute_plugin(wasm_bytes: &[u8]) -> Result<()> {
 ```
 
 If the plugin suffers a memory corruption bug (like a buffer overflow) due to poorly written C++ code compiled to WASM, the damage is strictly confined to the WASM Linear Memory. The Rust host memory remains completely untouched. This mathematically proven isolation allows us to safely execute untrusted third-party code directly within our core API at near-native speeds, achieving a level of security that Linux containers can never match.
+
+## 4. Production Post-Mortem: Linear Memory Exfiltration
+In 2022, a security researcher found a vulnerability in a multi-tenant WASM architecture. The host application was allocating a massive 4GB contiguous block of RAM and dividing it into smaller blocks to share among multiple WASM sandboxes. Because WebAssembly uses 32-bit pointers (Wasm32), a malicious plugin could theoretically overflow its pointer arithmetic and read the memory of *another* sandbox if the host's memory boundary enforcement was flawed. 
+**The Fix:** Modern runtimes like `wasmtime` rely on OS Virtual Memory paging. Each WASM instance is granted an isolated 4GB Virtual Address Space, backed by hardware `mmap` Guard Pages. If the WASM code attempts to read memory index `4GB + 1`, the physical CPU MMU (Memory Management Unit) triggers a `SIGSEGV` (Segmentation Fault) hardware trap, instantly terminating the sandbox at the silicon level.
+
+## 5. Advanced Mathematical Physics: JIT Compilation vs AOT
+How does `wasmtime` execute WASM at near-native speeds? It does not interpret the WASM bytecode line-by-line. It utilizes the **Cranelift** code generator. Cranelift translates the stack-based WASM AST into a mathematical Control Flow Graph (CFG), performs SSA (Static Single Assignment) optimization, and JIT (Just-In-Time) compiles it directly into x86-64 machine code instructions before execution begins. Because Cranelift is mathematically deterministic, it guarantees that the generated x86 code contains strict bounds-checking instructions before every single memory access, enforcing the sandbox mechanically at the CPU pipeline level.
+
+## 6. The Architect's Challenge
+> **Scenario:** You are allowing users to upload WASM modules to process images. You configure WASI to completely block filesystem and network access. However, a malicious user uploads a module that successfully crashes your entire Rust host process. How?
+
+*Hint: If a WASM module contains an infinite loop or performs a mathematically absurd operation (like calculating the billionth Fibonacci number), it will monopolize the OS thread. If your Rust executor is awaiting the WASM execution on a Tokio worker thread, the thread is blocked, leading to thread starvation and a Denial of Service. You must configure **Wasmtime Fuel** (a deterministic CPU cycle counter) or execute the WASM module inside a `tokio::task::spawn_blocking` thread pool to prevent the async reactor from freezing.*

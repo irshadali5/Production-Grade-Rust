@@ -91,3 +91,15 @@ We prevent this using **Wasmtime Fuel**. Fuel is a deterministic execution limit
 Before invoking the WASM module, the Rust host injects 10,000 "Fuel" points into the sandbox. As `wasmtime` executes the user's code, every single CPU instruction (add, multiply, jump) automatically deducts 1 point of Fuel. If the WASM code hits an infinite loop, the Fuel rapidly drops to 0. The absolute instant Fuel reaches 0, `wasmtime` violently intercepts the execution and traps the module, returning a `FuelExhausted` error to the Rust host.
 
 By combining Linear Memory isolation and precise CPU Fuel metering, we have built a mathematically secure, multi-tenant execution engine capable of running untrusted third-party code with zero infrastructure overhead.
+
+## 4. Production Post-Mortem: Reentrancy Exploits
+A multi-tenant architecture allowed WASM plugins to call back into the Rust host to query a database (`host_db_query`). A malicious plugin crafted a massive SQL injection payload and called the host function. While the host was suspended awaiting the database, the plugin maliciously manipulated the shared memory buffers. When the host resumed, it read corrupted memory, leading to a catastrophic Rust panic that brought down the entire Edge node. 
+**The Fix:** Never blindly trust memory buffers across the WASM boundary, especially during asynchronous yields. Implement strict Reentrancy Guards on your host functions, and always copy data out of the WASM Linear Memory into isolated Rust heap memory *before* initiating any asynchronous `.await` boundary.
+
+## 5. Advanced Mathematical Physics: The Epoch Interruption Engine
+Wasmtime Fuel requires the compiler to inject `fuel -= 1` instructions throughout the generated x86 code, introducing a minor CPU overhead. For hyper-optimized systems, we use the **Epoch Interruption Engine**. The Rust host runs a background timer thread that increments a global `epoch` integer every 10 milliseconds. The generated WASM x86 code checks this `epoch` against a deadline. Because checking an atomic integer is vastly faster than decrementing fuel on every basic block, it achieves near-zero overhead while still mathematically guaranteeing the sandbox can be terminated if it exceeds a 50ms time limit.
+
+## 6. The Architect's Challenge
+> **Scenario:** You run `Wasmtime` to instantiate a sandbox for every single HTTP request. The cold start time is 0.5ms. However, under load testing (10,000 req/sec), your Rust server OOM crashes. You notice that memory allocation scales linearly with the number of requests, even though the sandboxes are supposed to be destroyed. Why?
+
+*Hint: Calling `Module::new(engine, wasm_bytes)` invokes the Cranelift JIT Compiler. This is an extremely heavy operation that allocates memory to store the compiled machine code. If you JIT compile the user's WASM binary on every single HTTP request, you will exhaust your RAM instantly. You must compile the module exactly once at deployment time, store the compiled `Module` object in an `Arc`, and clone it. Instantiating a pre-compiled module (`linker.instantiate`) is lightning fast and memory efficient.*

@@ -102,3 +102,18 @@ impl Future for HardwareTimer {
     }
 }
 ```
+
+## 5. Production Post-Mortem: Thread Starvation
+Because Tokio relies on *Cooperative Multitasking*, it completely assumes your Future will yield (`.await`) rapidly. A developer once wrote an `async fn` that parsed a massive 500MB JSON file in memory without a single `.await` point. When Tokio polled this Future, the JSON parsing took 4 seconds. For those entire 4 seconds, the Tokio Worker Thread was hijacked. It could not pull any other tasks off the Run Queue. All 10,000 connected WebSockets on that thread instantly timed out. 
+**The Fix:** You must wrap blocking mathematical or IO operations inside `tokio::task::spawn_blocking()`. This ejects the heavy operation off the asynchronous event loop and onto a dedicated OS thread pool, keeping the async executor perfectly responsive.
+
+## 6. Advanced Mathematical Physics: The RawWaker VTable
+What exactly is a `Waker` at the memory level? It is incredibly cheap because it relies on C-style VTables (Virtual Method Tables). The `RawWaker` consists of exactly two pointers:
+1. `*const ()`: A raw pointer to the heap-allocated Tokio Task.
+2. `&RawWakerVTable`: A static pointer to a table of function pointers (`clone`, `wake`, `wake_by_ref`, `drop`).
+When `epoll` calls `waker.wake()`, it performs a single pointer dereference into the VTable, jumping the CPU instruction pointer directly to Tokio's C-ABI compatible wake function. This zero-allocation architecture ensures that waking a task takes only ~10 CPU clock cycles.
+
+## 7. The Architect's Challenge
+> **Scenario:** You implement a custom `Future` that reads from a hardware sensor. You poll the sensor, find no data, and return `Poll::Pending`. However, your Future is never polled again, even when the sensor finally has data. What did you forget?
+
+*Hint: You forgot to register the `Waker`. Returning `Poll::Pending` tells the executor to park the task, but if you do not actively store `cx.waker().clone()` somewhere (like giving it to the hardware driver's interrupt handler), the executor will never receive the `wake()` signal to put the task back on the Run Queue. The task will sleep for eternity.*

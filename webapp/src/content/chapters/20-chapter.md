@@ -95,3 +95,16 @@ pub async fn check_rate_limit(client: &Client, user_id: &str) -> bool {
     true // placeholder
 }
 ```
+
+## 5. Production Post-Mortem: Redis CPU Saturation
+While LUA scripts provide perfect atomicity, they introduce a critical bottleneck. In 2021, a major crypto exchange went offline during a market crash. The culprit? Their API Gateway was executing complex token bucket LUA scripts on a single Redis node for every single API call (millions per second). Because Redis is single-threaded, the LUA execution saturated 100% of the Redis CPU core, blocking all other caching operations cluster-wide. 
+**The Fix:** You must shard your rate limiter. By hashing the `user_id` and distributing the LUA scripts across a 16-node Redis Cluster, you parallelize the single-threaded bottlenecks.
+
+## 6. Advanced Mathematical Physics: Clock Drift & Nanosecond Skew
+The LUA script calculates time using `delta = now - last_refreshed`. Where does `now` come from? If you pass the timestamp from the Rust client (User Space), you are subject to **NTP Clock Drift**. If Rust Node A's physical quartz clock ticks 200 milliseconds faster than Rust Node B's clock, routing requests randomly between them will result in the `now` parameter jumping violently forward and backward in time, completely corrupting the math and dropping valid requests. 
+To achieve physical perfection, you must use the Redis internal `TIME` command (ensuring monotonic time on the centralized node) or implement Vector Clocks to reconcile distributed time drift.
+
+## 7. The Architect's Challenge
+> **Scenario:** You implement a strict Token Bucket allowing exactly 10 requests per minute per IP. A sophisticated hacker realizes they can bypass your limit and scrape 50,000 pages per hour, despite the LUA script being mathematically perfect. How are they doing it?
+
+*Hint: IPv6 architecture. Modern ISPs assign home users a `/64` IPv6 subnet, giving a single laptop access to 18,446,744,073,709,551,616 unique IP addresses. The hacker simply rotates their IPv6 address for every single HTTP request. If your rate limiter hashes the full IPv6 string as the key, they will never hit the limit. You must mathematically bit-mask and rate-limit by the `/64` routing prefix for IPv6, while keeping exact matches for IPv4.*

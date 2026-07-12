@@ -72,3 +72,16 @@ pub fn perform_key_exchange(bob_public_bytes: [u8; 32]) -> Secret<[u8; 32]> {
 ```
 
 Once the TCP session concludes, the ephemeral Private Keys are cryptographically zeroized from RAM (using the `secrecy` crate). The keys literally cease to exist. Even if the attacker compromises the physical server the very next day and extracts the NVMe hard drives and RAM chips, they cannot decrypt the historical traffic, because the keys physically no longer exist anywhere in the universe.
+
+## 4. Production Post-Mortem: Heartbleed and RAM Scraping
+Even with PFS, your Shared Secret must reside in RAM for the duration of the TCP connection. In the infamous 2014 Heartbleed OpenSSL vulnerability, attackers exploited a C-language bounds-checking flaw to read raw chunks of server RAM over the internet. They extracted these Shared Secrets directly from memory, bypassing all cryptographic math. 
+**The Rust Fix:** Rust's compiler guarantees memory bounds-checking, physically preventing Heartbleed buffer over-reads. Furthermore, using crates like `zeroize`, we enforce `Drop` traits that overwrite the memory location of the Shared Secret with `0x00` the absolute microsecond the variable goes out of scope, leaving no cryptographic ghost in RAM for an attacker to scrape.
+
+## 5. Advanced Mathematical Physics: Curve25519 Equation
+The fundamental security of ECDH relies on the curve equation `y^2 = x^3 + 486662x^2 + x` over a prime field `p = 2^255 - 19` (hence the name Curve25519). 
+Why this specific prime? Generating keys requires heavy modular arithmetic. By choosing `2^255 - 19`, the CPU can perform modular reductions using extremely fast bitwise bit-shifts (`>> 255`) and rapid hardware addition, completely avoiding the slow CPU division (`IDIV`) instructions required by standard primes. This allows a Rust server to execute over 10,000 ephemeral ECDHE handshakes per second per core.
+
+## 6. The Architect's Challenge
+> **Scenario:** Two microservices perfectly execute the ECDHE handshake and establish a Shared Secret. They use this secret to encrypt the payload using AES-GCM. However, a malicious Man-In-The-Middle (MITM) attacker manages to completely hijack the connection and decrypt the payload in real-time. How did they bypass the unbreakable ECDH math?
+
+*Hint: ECDH provides secure key exchange, but it provides **zero authentication**. The MITM attacker intercepted Alice's Public Key, replaced it with their own, and sent it to Bob. Bob established a perfect encrypted tunnel... with the attacker. To prevent this, the Public Keys must be cryptographically signed by a trusted Certificate Authority (CA) via RSA or ECDSA (this is how TLS certificates work) before the Diffie-Hellman exchange occurs.*

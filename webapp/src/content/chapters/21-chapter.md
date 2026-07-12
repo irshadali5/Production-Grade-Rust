@@ -72,3 +72,17 @@ Instead of scanning every vector, `pgvector` builds a multi-layered graph in mem
 When a search query arrives, the HNSW algorithm enters the top layer. It takes massive, sweeping mathematical leaps across the dimensional space to rapidly locate the general semantic "neighborhood" of the query (e.g., jumping straight to the "vehicle" neighborhood). It then descends to the lower layers, taking smaller and smaller steps to find the exact nearest neighbors.
 
 This graph traversal trades a microscopic fraction of accuracy (perhaps 1% error rate) for an astronomical, logarithmic speedup. By utilizing HNSW, our Rust server can perform deep semantic searches across billions of documents, returning the results in less than 5 milliseconds.
+
+## 5. Production Post-Mortem: OOM during Graph Construction
+The HNSW graph is a memory-resident structure. During a massive batch ingestion of 5 million vectors, a junior engineer triggered an `INSERT` statement in Postgres. The server immediately crashed due to an Out-Of-Memory (OOM) panic. 
+**The physics of the failure:** Building the HNSW index requires maintaining complex graph links (up to `m=16` edges per node per layer) during index creation. This requires significantly more RAM (often 3-4x the raw vector size) because of the pointer overhead. Furthermore, modifying the graph requires exclusive write locks. The fix is to scale `work_mem` aggressively in `postgresql.conf`, decrease `m` (graph links) to save RAM, and *always* construct the index *after* performing bulk initial inserts, not before.
+
+## 6. Advanced Mathematical Physics: SIMD Cosine Angle
+The formula for Cosine Similarity is:
+`Cosine(A, B) = (A · B) / (||A|| * ||B||)`
+Calculating this using a standard Rust `for` loop over 1,536 dimensions takes roughly ~4,000 CPU clock cycles per document. However, `pgvector` and modern Rust libraries use **AVX-512 SIMD** hardware instructions. By packing 16 `f32` floats into a single physical 512-bit CPU register (`zmm0`), the CPU can perform 16 multiplications in a single nanosecond clock cycle (`vfmadd231ps`). This mathematically compresses the 4,000 cycles down to ~250 cycles, a 16x physical hardware speedup that cannot be replicated by software tricks alone.
+
+## 7. The Architect's Challenge
+> **Scenario:** Your LLM chatbot uses HNSW to search 10 million corporate documents. A user searches for "HR Policies", but the results returned are terrible and completely unrelated. However, when you switch to an EXACT search (`ORDER BY embedding <=> query_vector`), the results are perfect. Why is the HNSW graph failing?
+
+*Hint: HNSW is an "Approximate" algorithm based on the geometric density of vectors. If your embedding space is heavily clustered (e.g., 90% of your documents are hyper-similar HR documents), the HNSW graph struggles to navigate because the distances between nodes become infinitesimally small. This is known as "Hubness". To fix this, you must increase `ef_search` (the size of the dynamic candidate list during search) to force the graph to explore deeper, trading milliseconds of CPU time for much higher recall accuracy.*

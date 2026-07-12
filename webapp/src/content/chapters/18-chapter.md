@@ -80,3 +80,25 @@ pub async fn websocket_actor(user_id: Uuid, state: std::sync::Arc<AppState>) {
 ```
 
 By relying entirely on lock-free message passing, we guarantee that no two users will ever block each other, allowing the chat server to scale perfectly linearly across all physical CPU cores.
+
+## 4. Production Post-Mortem: The Discord 2023 Outage
+While Actor models perfectly isolate tasks, they introduce a terrifying failure mode: **Mailbox Unbounded Queue Exhaustion**. In early 2023, a massive chat platform experienced a cascading failure. If User B's TCP socket slowed down (due to a bad cellular connection), User B's Actor paused writing to the socket. However, User A's Actor continued dropping 100 messages a second into User B's MPSC channel. Because the channel was configured as `unbounded`, it mathematically expanded to consume all available RAM on the physical server, triggering a catastrophic Out-Of-Memory (OOM) panic that crashed the entire node. *Always* use bounded channels (`mpsc::channel(1024)`) and apply backpressure to the sender.
+
+## 5. Advanced Mathematical Physics: The CAS Loop
+How does a lock-free `DashMap` actually work at the silicon level? It relies on a CPU hardware instruction called **Compare-And-Swap (CAS)** (specifically `CMPXCHG` on x86). 
+Instead of acquiring a OS-level lock (which takes thousands of clock cycles and context switches), the Rust thread reads the current memory value, calculates the new value, and issues a CAS instruction to the physical CPU: *"If the memory value is still exactly X, swap it to Y atomically"*. If another thread mutated the memory in the intervening nanoseconds, the CAS instruction fails. The Rust thread then mathematically spins in a `while` loop (a Spinlock), recalculating and retrying. This bypasses OS context switches entirely, completing in roughly ~15 CPU clock cycles (nanoseconds).
+
+## 6. The Architect's Challenge
+> **Scenario:** You are building an Actor-based trading engine. The code below randomly hangs forever (a Deadlock) under heavy load, even though there are zero `Mutex` locks in the entire codebase. Why?
+
+```rust
+// Broken Architecture
+async fn trade_actor(mut rx: mpsc::Receiver<Order>, tx: mpsc::Sender<Receipt>) {
+    while let Some(order) = rx.recv().await {
+        let receipt = process(order).await;
+        // FATAL FLAW:
+        tx.send(receipt).await.unwrap(); 
+    }
+}
+```
+*Hint: If the `tx` channel is bounded and currently full, `send().await` yields control back to the executor, pausing this actor. If the actor on the other end is also `await`ing to send a message back to THIS actor, neither can proceed. This is an Asynchronous Deadlock. You must use `.try_send()` or architect separate queues for circular workflows.*
