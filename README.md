@@ -62,4 +62,13 @@ bun install
 bun run dev
 ```
 
+## Disclaimer & License
+
+> [!WARNING]
+> **AI-Generated Content**: The content within this project is heavily AI-generated. It is an ongoing effort to rigorously verify the technical accuracy of the deep-dive architectural systems described. If you discover any mistakes, technical errors, or inaccuracies, please **open an issue** or submit a contribution!
+
+**Ownership & Custom License**: I (Irshad) am the sole owner and maintainer of this project. I reserve the exclusive right to utilize this project for any purpose, including commercial endeavors. 
+
+For all other users, this project is governed by a **Custom Non-Commercial License**. You are highly encouraged to read, learn from, and redistribute the code for educational purposes, but you are **strictly prohibited** from selling or using this project for commercial gain. See the `LICENSE` file for full details.
+
 > **"Software engineering at scale is not about writing code; it is about mathematically managing the physical constraints of the universe."**
