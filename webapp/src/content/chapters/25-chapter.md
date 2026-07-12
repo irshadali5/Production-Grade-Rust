@@ -108,6 +108,12 @@ How does Terraform know the exact order to build 10,000 AWS resources? It uses *
 > Terraform accelerates the blast radius of human error to the speed of the AWS API.
 
 *   **Edge Cases**: Orphaned Resources. If you delete a resource from the HCL code, but the backend Terraform State file is simultaneously corrupted or deleted, Terraform loses its cryptographic memory of the resource. The AWS resource becomes "orphaned"—it physically exists and incurs heavy billing, but Terraform mathematically cannot see it or delete it.
-*   **Tradeoffs (Immutable Infrastructure vs. Mutable Pain)**: Terraform treats infrastructure as strictly immutable. If you change the AMI ID of an EC2 instance, Terraform will not gracefully `SSH` in and update the software; it will brutally terminate the server and boot a completely new one. You are trading zero-downtime mutability for mathematically perfect state consistency.
-*   **Constraints**: Eventual Consistency of the Cloud. AWS API calls are eventually consistent. Terraform might receive a `200 OK` that an IAM Role was created, but when the DAG attempts to attach that role to an EC2 instance 50 milliseconds later, the AWS IAM database hasn't globally synced, causing the pipeline to fail randomly. You must utilize `depends_on` carefully.
 *   **Best Practices**: Implement `terraform plan` execution directly in GitHub Pull Request comments via automation tools like Atlantis. This mathematically forces all infrastructure changes to undergo human peer review *before* the DynamoDB lock is acquired and the physical cloud is mutated.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Terraform State Locking. When running Terraform in CI/CD, if two pipelines run concurrently, they could simultaneously mutate the cloud environment. Terraform uses a remote DynamoDB lock table to physically prevent concurrent executions.
+*   **Advanced Implications**: Drift Detection and Re-Entrant Pipelines. In a catastrophic outage, an SRE might manually SSH into an EC2 instance or use the AWS Console to fix a bug (e.g., adding an emergency Security Group rule). This causes "Drift". When Terraform runs next, it will mercilessly delete the emergency fix because it violates the immutable code state. Advanced hyperscale pipelines must implement autonomous Drift Detection crons that continuously run `terraform plan`, detect drift, and automatically generate GitHub PRs (via tools like Firefly) to backport the physical cloud changes into the HCL code, preventing the CD pipeline from accidentally reversing emergency remediations.

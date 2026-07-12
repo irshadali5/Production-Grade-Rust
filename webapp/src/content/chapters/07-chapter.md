@@ -117,3 +117,11 @@ flowchart TD
 *   **Best Practices**: 
     1. Always use Alpine or Slim variants of database images (e.g., `postgres:16-alpine`) to minimize network pull times in CI.
     2. Aggressively parallelize your integration tests using `cargo test -- --test-threads=16` (or however many cores your CI runner has), as Testcontainers' ephemeral ports guarantee zero port collisions.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Ephemeral State Verification. Testcontainers programmatically spin up isolated Docker containers (e.g., Postgres, Redis) for every test suite. However, if a test crashes mid-execution (panic), it leaves dangling containers running on the host, consuming RAM and ports until the CI runner completely freezes.
+*   **Advanced Implications**: The Ryuk Resource Reaper. The Rust `testcontainers` crate circumvents this memory leak by deploying a privileged secondary container called **Ryuk**. Ryuk maintains a persistent TCP heartbeat with the primary Rust test runner. If the Rust process panics or is `SIGKILL`'d by the OS, the heartbeat drops. Ryuk instantaneously leverages its privileged access to the Docker daemon socket (`/var/run/docker.sock`) to ruthlessly terminate and garbage-collect all associated test containers, mathematically guaranteeing a perfectly clean environment regardless of catastrophic test failures.

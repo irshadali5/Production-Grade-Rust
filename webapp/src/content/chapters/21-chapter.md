@@ -110,6 +110,12 @@ flowchart LR
 > High-dimensional vectors consume astronomical amounts of RAM.
 
 *   **Edge Cases**: The Lexical Gap. HNSW performs pure semantic search based on meaning. If a user searches for an exact alphanumeric serial number (e.g., "TX-9942-B"), the embedding model often destroys the exact lexical token, returning completely irrelevant semantic results. HNSW completely fails at exact keyword lookups.
-*   **Tradeoffs (Storage Costs vs. Dimensionality)**: 1,536-dimensional vectors (`f32`) require exactly 6,144 bytes of physical RAM each. One billion vectors require 6.1 Terabytes of expensive RAM to keep the HNSW index hot. You must trade microscopic accuracy for cost by utilizing scalar quantization (reducing `f32` floats to `i8` integers) or dimension reduction (PCA).
-*   **Constraints**: Postgres `shared_buffers` Exhaustion. `pgvector` relies entirely on the internal Postgres buffer cache for graph traversal. If your vector index exceeds your physical server RAM, the OS will aggressively swap to the NVMe disk, instantly increasing search latency from 5ms to 5,000ms.
 *   **Best Practices**: Implement **Hybrid Search**. Combine the semantic power of `pgvector` HNSW with the exact lexical matching of Postgres Full Text Search (BM25). Use a Reciprocal Rank Fusion (RRF) algorithm to mathematically merge the two result sets, achieving perfect semantic and lexical accuracy.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: HNSW Index Build Times. When inserting 10 million vectors into Postgres, building the HNSW graph requires calculating millions of Cosine similarities to stitch the nodes together. This blocks CPU resources and can take hours.
+*   **Advanced Implications**: Unlogged Tables and Maintenance `work_mem`. The optimal strategy for massive vector ingestion is to utilize Postgres `UNLOGGED` tables (which bypass the WAL disk fsyncs) and dramatically increase the `maintenance_work_mem` parameter to several Gigabytes. You `COPY` the raw vectors directly into RAM, build the massive HNSW index entirely in memory, and only then toggle the table to `LOGGED`. This circumvents the microscopic I/O operations of the WAL, accelerating index construction by a factor of 100x while risking temporary data loss only during the brief ingestion window.

@@ -132,3 +132,11 @@ By forcing the execution time to be mathematically identical across all inputs, 
 *   **Best Practices**: 
     1. Always use `tokio::task::spawn_blocking` to offload Argon2id hashing to a dedicated OS thread pool, preventing it from stalling the asynchronous reactor.
     2. Never write your own constant-time comparison logic. Use `subtle::ConstantTimeEq` which relies on `core::sync::atomic::compiler_fence` to mathematically block LLVM from unrolling or optimizing the loop.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Password Hashing vs Key Derivation. Using standard hashing algorithms (SHA-256) for passwords is mathematically catastrophic, as custom ASIC hardware can brute-force billions of hashes per second. You must use memory-hard Key Derivation Functions (KDFs) like Argon2id.
+*   **Advanced Implications**: The Zeroization Compiler Optimization. When deriving cryptographic keys or validating passwords in RAM, you store highly sensitive data in a `Vec<u8>`. When the variable falls out of scope, Rust frees the memory. However, the memory is just marked as "available"; the actual physical bytes remain in RAM. If an attacker leverages a memory leak (like Heartbleed), they can read the discarded keys. If you write a manual loop to overwrite the array with zeroes, the LLVM compiler's Dead Code Elimination (DCE) pass will mathematically prove that the array is never read again, and it will silently *delete* your zeroing loop to optimize the assembly. You must use the `zeroize` crate, which executes `core::sync::atomic::compiler_fence` and `volatile` memory writes, physically forcing the LLVM compiler to generate the assembly instructions that obliterate the RAM bytes.

@@ -147,6 +147,12 @@ flowchart TD
 > The cooperative nature of Rust's async/await requires absolute developer discipline to avoid Thread Starvation.
 
 *   **Edge Cases**: The Cancel-Safe Vulnerability. If a Tokio task is dropped mid-execution (e.g., the user violently closes their browser connection), the `Future` is instantly destroyed at the exact `.await` point. If this happens *during* a multi-step database transaction without a strict Drop-based `COMMIT/ROLLBACK` handler, the connection is returned to the pool in a corrupted, uncommitted state, permanently locking database tables.
-*   **Tradeoffs (Cooperative vs. Preemptive Multitasking)**: The Linux OS uses preemptive multitasking (it physically forces threads to stop). Tokio uses cooperative multitasking (it asks the Future to yield voluntarily via `.await`). This avoids expensive OS context switches but means a single infinite CPU `while` loop written by a junior developer will physically hijack the executor thread, dropping thousands of other users offline.
-*   **Constraints**: The `Send` Trait. To move a Future across Tokio worker threads dynamically, every single variable held across an `.await` boundary must be `Send` (thread-safe). This completely bans the use of single-threaded constructs like `std::rc::Rc` or `RefCell` in asynchronous contexts, forcing the use of slower atomic variants like `Arc`.
 *   **Best Practices**: Always use the `tokio::select!` macro to enforce strict execution timeouts on all asynchronous network operations. This mathematically guarantees that a hanging TCP connection will physically drop the Future and free the memory, preventing the executor from grinding to a halt.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The Waker and the `poll` Loop. When a Future returns `Poll::Pending`, it must provide a `Waker` to the OS event loop (epoll/kqueue). If the developer accidentally drops the `Waker` or forgets to register it, the Future will permanently go to sleep and will mathematically never be executed again, causing a silent memory leak.
+*   **Advanced Implications**: Work-Stealing Queues and CPU Affinity. Tokio utilizes a Work-Stealing scheduler. If Thread A finishes its queue, it violently locks Thread B's queue and steals half of its Futures. While excellent for load balancing, this physically moves the Future's memory address to a different CPU core, completely trashing the L1 cache. For ultra-low latency trading engines, you must abandon `tokio`'s multi-threaded runtime entirely. Instead, you spawn multiple `tokio::runtime::Builder::new_current_thread()` runtimes, manually bind them to physical CPU cores via `core_affinity`, and implement a Share-Nothing Architecture (using SO_REUSEPORT) to guarantee 100% L1 cache hits.

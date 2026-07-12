@@ -142,3 +142,19 @@ How does `hyper` stream gigabytes of video data through the proxy without consum
 > **Scenario:** Your gateway is using a `tower` Concurrency Limiter set to `10_000`. You observe that during a DDoS attack, exactly 10,000 requests are being processed, but an additional 50,000 requests are hanging completely, keeping the TCP connection open indefinitely, slowly burning through your available OS file descriptors until the server crashes. Why?
 
 *Hint: The `ConcurrencyLimitLayer` uses an internal Semaphore to limit active requests. However, if 10,000 requests acquire the semaphore, the 10,001st request is placed into an unbounded pending queue. It waits forever to acquire the semaphore. Because the TCP socket is already accepted by Tokio, it stays open. You must explicitly pair the `ConcurrencyLimitLayer` with a `LoadShedLayer` (which instantly returns a 503 if the semaphore queue is full) or a `BufferLayer` with a strictly defined maximum capacity to enforce mathematical backpressure.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Edge Gateways are the single point of failure; aggressive timeouts and shedding are mandatory.
+
+*   **Edge Cases**: TCP Half-Open Connections (SYN Floods). The gateway might handle HTTP concurrency easily, but if attackers send millions of TCP SYN packets without ACKing, the Linux Kernel's SYN backlog will overflow and drop legitimate connections before `hyper` ever sees them. You must tune `tcp_max_syn_backlog` and enable `tcp_syncookies`.
+*   **Best Practices**: Use `rustls` (which is memory-safe and mathematically outperforms legacy OpenSSL) and strictly terminate TLS at the very edge. Internal VPC traffic should ideally remain plaintext or use lightweight mTLS (like Linkerd) to prevent double-encryption CPU penalties.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The `SO_REUSEPORT` Directive. Standard TCP bind operations lock the port to a single process. If the Gateway crashes, the port enters `TIME_WAIT` for 60 seconds, preventing immediate application restarts.
+*   **Advanced Implications**: Socket Sharding. By binding the socket with `SO_REUSEPORT`, you bypass the kernel's single-accept-queue limitation. You can spawn 16 independent Rust Gateway binaries, and the Linux kernel will mathematically shard the incoming TCP `SYN` packets across the 16 processes directly in hardware, bypassing Tokio's internal single-threaded `accept` loop and unlocking millions of concurrent TCP connections per second.

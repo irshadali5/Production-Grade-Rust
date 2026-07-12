@@ -80,6 +80,12 @@ To run the examples in this book locally, you will need:
 > Building hyperscale systems requires sacrificing developer velocity. Do not apply these patterns prematurely.
 
 *   **Edge Cases**: Hardware failure at the extreme limits. When pushing 10 million requests per second, you will encounter cosmic ray bit-flips in RAM and undocumented silicon bugs. These require error-correcting codes (ECC memory) and software-level checksums.
-*   **Tradeoffs (Velocity vs. Execution Speed)**: Designing an application with `io_uring`, eBPF, and lock-free data structures will take 10x longer to develop than a standard MVC web application in Ruby or Python. You are trading expensive human developer time for highly optimized hardware execution time.
-*   **Constraints**: Cognitive load. The learning curve for this stack is immense. It requires a team of elite engineers who deeply understand both the Linux kernel and Rust's strict compiler rules.
 *   **Best Practices**: Standardize first, optimize second. Build your application using standard Axum and Postgres. Only reach for MicroVMs, eBPF, and SIMD hardware acceleration when you have cryptographic proof (via Flamegraphs) that your standard architecture is failing under load.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Memory Hierarchy and the Cost of Abstractions. When building standard web apps, developer velocity is prioritized, utilizing high-level abstractions (`String`, `Vec`). However, hyperscale systems demand a strict mechanical sympathy for the hardware. You must understand that fetching data from the L1 CPU cache takes ~1 nanosecond, while a main memory (RAM) fetch takes ~100 nanoseconds. 
+*   **Advanced Implications**: Cache-Line Bouncing. In multi-threaded Rust architectures, if two CPU cores constantly modify independent variables that happen to sit on the same 64-byte physical cache line, the CPU hardware will invalidate the cache across the entire L3 bus (False Sharing). This drops your theoretical C10M architecture back to C10K. Rust's strict `Send` and `Sync` traits guarantee data-race safety, but they *do not* protect against False Sharing performance degradation. You must manually force data alignment using `#[repr(align(64))]` on critical hot-path structs.

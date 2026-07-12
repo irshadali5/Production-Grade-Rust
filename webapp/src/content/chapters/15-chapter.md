@@ -84,6 +84,12 @@ Because the invalid tokens are mathematically erased from existence before the s
 > Logit Masking forces valid syntax, but it cannot force valid semantics.
 
 *   **Edge Cases**: The Deterministic Loop. If the LLM generates a mathematically valid JSON structure but fundamentally misunderstands the prompt, it might get "stuck" outputting valid but useless data in an infinite loop just to satisfy the schema. You must enforce strict token limits (`max_tokens`) to physically break the generation.
-*   **Tradeoffs (Inference Speed vs. Structure)**: Applying Logit Masking forces the inference engine to mathematically evaluate the JSON Schema constraints against the entire 100,000-token vocabulary on every single autoregressive generation step. This significantly increases GPU computational overhead, reducing inference speed by 10-20%.
-*   **Constraints**: Model Compatibility. Not all open-source models (or cloud providers) support Logit Masking natively. You must use specialized inference servers like vLLM or specialized frameworks (like Outlines) that physically intercept the HuggingFace sampling pipeline.
 *   **Best Practices**: Do not force the model to generate massive, deeply nested arrays in a single pass. Break complex JSON schemas into smaller, sequential LLM calls. This prevents context degradation and maintains high semantic accuracy while strictly enforcing syntax.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Prompt Engineering vs Deterministic State Machines. Asking an LLM to "Please return valid JSON" relies on statistical probability. In an automated backend pipeline, a 1% syntax error rate mathematically translates to 10,000 catastrophic pipeline failures per day. You must enforce physical constraints at the silicon level.
+*   **Advanced Implications**: Finite State Machine (FSM) Logit Masking. Tools like Outlines or generic LLM constraints do not just post-process the text. They physically convert your JSON Schema into a mathematical Regex-based Finite State Machine. During generation, before the GPU samples the next token, the Rust engine queries the FSM. If the current state requires a quotation mark `"`, the engine explicitly forces the probability (Logit) of all other 100,000 tokens to Negative Infinity (`-inf`) in the GPU's memory. This physically forces the model to generate the exact character required, guaranteeing 100.000% adherence to the data structure without degrading the semantic intelligence of the surrounding words.

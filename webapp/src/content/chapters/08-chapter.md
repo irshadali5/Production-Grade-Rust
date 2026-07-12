@@ -112,3 +112,11 @@ By transmitting batches via gRPC, we utilize HTTP/2 multiplexing, drastically re
 *   **Tradeoffs (Observability vs. CPU Overhead)**: Generating cryptographically secure 128-bit `trace_id`s, capturing stack traces, and formatting JSON attributes consumes CPU cycles. While negligible at 1,000 req/sec, at 1,000,000 req/sec, the telemetry pipeline alone can consume 30% of your total CPU capacity.
 *   **Constraints**: Blind Spots. Tracing Spans only capture function entry/exit times and explicit attributes. They do not capture the values of local variables within a function unless you explicitly inject them via `tracing::info!(val)`.
 *   **Best Practices**: Do not export 100% of telemetry in production. Implement a **Tail-Based Sampler** at the OpenTelemetry Collector level. Configure it to silently drop 99% of successful HTTP 200 requests, but mathematically guarantee the export of 100% of HTTP 500 errors and requests that take longer than 2 seconds (latency outliers).
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Span Propagation and Distributed Context. Passing a `TraceID` manually as an argument to every single Rust function destroys code readability. The `tracing` crate utilizes Task-Local Storage (the asynchronous equivalent of Thread-Local Storage) to implicitly carry the Span context through deeply nested async stacks.
+*   **Advanced Implications**: The `instrument` Macro vs Assembly Bloat. Decorating every function with `#[tracing::instrument]` provides beautiful call graphs, but it forces the Rust compiler to physically wrap every function body in an `EnterGuard` and `DropGuard`. In extreme hot-paths, this introduces thousands of hidden atomic operations (incrementing Span reference counts) per request. For critical algorithms (like SIMD math or HNSW graph traversal), you must meticulously avoid `instrument` and instead manually construct lightweight, detached Spans only at the outer architectural boundaries to preserve instruction cache (I-Cache) density.

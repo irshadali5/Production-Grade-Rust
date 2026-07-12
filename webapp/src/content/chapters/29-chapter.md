@@ -103,6 +103,12 @@ flowchart TD
 > Hardware profiling introduces an observer effect that can skew high-frequency algorithms.
 
 *   **Edge Cases**: The Profiler Observer Effect (Heisenberg's Uncertainty Principle applied to silicon). Running `perf` introduces a microscopic CPU interruption every 1ms. If you are profiling a high-frequency trading algorithm where microsecond precision is required, the interrupt itself will subtly shift thread scheduling and hardware cache behavior, resulting in a Flamegraph that completely misrepresents the true production execution path.
-*   **Tradeoffs (Debug Symbols vs. Binary Size)**: Compiling with `debug = 1` and `force-frame-pointers = true` makes Flamegraphs readable but drastically increases the Docker image size. Furthermore, enforcing frame pointers introduces a 2-5% CPU execution penalty because the compiler is forced to disable certain inline optimizations and register allocation tricks.
-*   **Constraints**: JIT Languages & Mixed Stacks. If your Rust server embeds a V8 Javascript engine or a Lua JIT runtime, a standard `perf` Flamegraph will show a massive black box for the JIT execution because the assembly is generated in-memory dynamically. You must run specialized perf injectors (`perf map`) to synchronize the physical JIT addresses with human-readable function names.
 *   **Best Practices**: Integrate Continuous Profiling (e.g., Parca or Pyroscope) directly into your cluster infrastructure. Do not wait for a catastrophic outage to run `perf`. Constantly sample the CPU at 99Hz across all production nodes to build a historical baseline of Flamegraphs, allowing you to mathematically diff CPU consumption between software releases.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The Instruction Pointer (IP). When `perf` profiles a running Rust binary, it interrupts the CPU 99 times a second and records the exact memory address of the Instruction Pointer (IP). Without Debug Symbols (`-g`), these addresses are just meaningless hexadecimal numbers (`0x0042FC8A`), making Flamegraphs useless.
+*   **Advanced Implications**: Frame Pointers and the eBPF Revolution. To generate stack traces, `perf` must traverse the call stack. Historically, this required compiling with `-C force-frame-pointers=yes`, which degrades CPU performance by 2-5% because it consumes a dedicated CPU register. In modern hyperscale tracing, you abandon standard `perf` entirely and utilize eBPF with DWARF-based stack walking. eBPF can dynamically read the DWARF debug information natively inside the Linux kernel without requiring frame pointers. This allows you to mathematically trace production Rust code at 100Hz with zero statistical overhead, capturing microscopic latency spikes in asynchronous Tokio contexts that traditional profilers completely miss.

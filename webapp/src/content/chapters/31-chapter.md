@@ -116,6 +116,12 @@ flowchart TD
 > Hardware-level CPU exploits can shatter the isolation of Multi-Tenant VMs.
 
 *   **Edge Cases**: The Spectre/Meltdown Hardware Flaws. Because Firecracker allows multiple untrusted MicroVMs to execute on the same physical CPU core concurrently using Hyper-Threading (SMT), an attacker can use side-channel timing attacks against the L1 CPU cache to mathematically extract private encryption keys from a completely isolated MicroVM. You must disable Hyper-Threading completely on multi-tenant nodes.
-*   **Tradeoffs (Isolation vs. Boot Time)**: A Firecracker MicroVM boots in 125ms. A standard Docker container boots in 10ms. While 125ms is incredibly fast for a Virtual Machine, it is still a massive latency penalty for a cold-starting Serverless function responding to a synchronous user HTTP request.
-*   **Constraints**: Strict Storage Drivers. Firecracker strictly utilizes the `virtio-blk` paravirtualized block device. You cannot directly mount standard Kubernetes Persistent Volumes (like AWS EBS or NFS) into a MicroVM without building a highly complex, custom Virtio host-to-guest translation layer.
 *   **Best Practices**: Implement a specialized "Jailer" process for every Firecracker hypervisor. The Jailer uses Linux `cgroups` and `seccomp` filters to strictly limit the hypervisor process itself. If an attacker discovers a zero-day VM escape vulnerability in KVM, they break out of the VM only to find themselves trapped inside a secondary, unprivileged Linux jail.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Docker Daemon Bottlenecks. A standard Kubernetes/Docker cluster uses a centralized `containerd` daemon to manage all containers. If you attempt to launch 1,000 Docker containers simultaneously, the centralized daemon experiences massive lock contention, the OS routing table (`iptables`) explodes, and the node crashes.
+*   **Advanced Implications**: The KVM Hardware Virtualization API. Firecracker completely bypasses the concept of containers. It is a Rust-based Hypervisor that speaks directly to the Linux Kernel Virtual Machine (KVM) API via the `/dev/kvm` hardware device. Instead of relying on software namespaces, Firecracker utilizes actual silicon-level virtualization extensions (Intel VT-x or AMD-V). You can safely spin up 4,000 independent Firecracker MicroVMs on a single bare-metal server in under a second because they do not share a software daemon; they are physically distinct virtual hardware machines interacting directly with the CPU circuitry.

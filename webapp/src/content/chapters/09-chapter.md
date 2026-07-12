@@ -105,3 +105,11 @@ This dynamic dispatch incurs a microscopic CPU overhead (a pointer indirection),
 *   **Tradeoffs (Enums vs. Opaque Pointers)**: `thiserror` (Enums) provides mathematical certainty via exhaustive pattern matching, but modifying an enum requires refactoring every single `match` statement in the codebase. `eyre` (Dynamic Pointers) provides ultimate developer velocity (just slap `?` on everything), but the caller has absolutely no idea what type of error actually occurred without unsafe downcasting.
 *   **Constraints**: Heap Allocation Penalty. `eyre::Report` mandates a heap allocation (`Box<dyn Error>`). In 99% of web applications, allocating 16 bytes on the heap during an error path is irrelevant. However, in High-Frequency Trading (HFT) engines where nanoseconds matter, this allocation is unacceptable, forcing the use of purely stack-allocated static enums.
 *   **Best Practices**: **Never** use `eyre` in a library crate (`src/domain` or `src/infrastructure`). Only use `eyre` at the absolute outer edge of your binary application (e.g., inside the `src/main.rs` routing handlers).
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The Error Trait and `Display` vs `Debug`. A standard web application logs errors as strings. However, robust systems require structured logs. Using `eyre` provides dynamic stack traces, but formatting an `eyre::Report` requires traversing the dynamic pointer chain and allocating massive strings in memory.
+*   **Advanced Implications**: Zero-Cost Error Propagation via `std::convert::From`. In high-performance data planes, error handling must be computationally free. By strictly leveraging the `?` operator backed by meticulously implemented `From` traits on `enum` definitions, the Rust compiler leverages `Result<T, E>` which is physically stored in the CPU registers. If an error occurs, the CPU executes a single branch instruction (`JMP`) to return the Enum variant. There are zero heap allocations, zero string formatting operations, and zero dynamic pointer lookups until the error finally hits the absolute outer edge (the HTTP Router), maintaining theoretical maximum throughput during failure storms.

@@ -135,3 +135,11 @@ mod tests {
 *   **Best Practices**: 
     1. **Never write your own lock-free algorithms** unless you have mathematical proof you need them. Use heavily audited crates like `crossbeam` or `dashmap`.
     2. Only use `loom` to verify the most critical, centralized synchronization primitives in your architecture.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The `Mutex` vs `RwLock` Contention. A standard `Mutex` blocks all readers and writers. An `RwLock` allows multiple readers but blocks all writes. In heavily read-optimized systems, developers blindly reach for `RwLock`. However, the internal implementation of `RwLock` requires atomic reference counting for the readers. If 64 CPU cores attempt to acquire read locks simultaneously, they will cause massive L3 Cache invalidation on the atomic reader count, making the `RwLock` *slower* than a standard `Mutex`.
+*   **Advanced Implications**: Lock-Free Hardware Primitives. To bypass kernel-level lock contention, you must drop down to silicon-level atomic instructions (`AtomicUsize`, `AtomicPtr`) and employ `Relaxed` or `Acquire/Release` memory orderings. However, lock-free programming introduces terrifying edge cases like the ABA problem (where a pointer is deleted, memory is reallocated to a new struct, and a sleeping thread reads the new struct thinking it's the old one). You must integrate **Hazard Pointers** or **Epoch-Based Reclamation** (e.g., `crossbeam-epoch`) to mathematically guarantee that memory is only freed after all hardware threads have explicitly relinquished their references, bridging the gap between Rust's lifetime checker and raw assembly execution.

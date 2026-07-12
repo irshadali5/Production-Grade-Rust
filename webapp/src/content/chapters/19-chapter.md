@@ -86,6 +86,12 @@ How does `clippy` analyze 50,000 lines of code in seconds? It relies on the phys
 > Hyper-strict AST linting physically slows down initial developer velocity.
 
 *   **Edge Cases**: The Flaky Test. A unit test that relies on system time, random number generators, or network latency might pass 99% of the time but fail randomly. This breaks the mathematical determinism of the CI DAG, randomly blocking production deployments. Flaky tests must be ruthlessly quarantined or deleted entirely.
-*   **Tradeoffs (Purity vs. Velocity)**: Enforcing `cargo clippy -- -D warnings` physically blocks developers from merging PRs if they use a slightly unoptimized integer type or clone a string unnecessarily. This creates immense initial friction and slows down rapid prototyping for the sake of long-term codebase purity.
-*   **Constraints**: The `Cargo.lock` Merge Conflict. In massive monorepos, if 50 engineers are adding or updating dependencies simultaneously, the `Cargo.lock` file will constantly suffer from Git merge conflicts, requiring developers to repeatedly `rebase` and re-resolve the cryptographic hashes manually.
 *   **Best Practices**: Use `cargo-deny` in addition to `cargo-audit` to mathematically enforce licensing compliance (e.g., automatically banning GPL-licensed crates in a proprietary commercial codebase) directly within the CI DAG, preventing legal catastrophes before the code is even merged.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Cargo Feature Unification. In a large workspace, if Crate A depends on `tokio` with the `rt-multi-thread` feature, and Crate B depends on `tokio` without it, Cargo will unify the features and compile `tokio` once for the entire workspace using the union of all requested features.
+*   **Advanced Implications**: The Build-Time Explosion. Feature unification is catastrophic for CI/CD matrices. If a core domain crate accidentally enables the `derive` feature on the `serde` crate, the Rust compiler will heavily compile the `syn` and `quote` procedural macro crates across the entire workspace, adding 30 seconds to the build time of completely unrelated microservices. You must meticulously split workspaces using `resolver = "2"` and aggressively isolate procedural macro dependencies to physically prevent AST-parsing overhead from polluting the global dependency tree.

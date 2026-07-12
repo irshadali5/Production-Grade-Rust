@@ -102,6 +102,12 @@ pub fn parse_markdown(ptr: *mut u8, len: usize) -> String {
 > WebAssembly Linear Memory is NOT garbage collected by the JavaScript V8 engine.
 
 *   **Edge Cases**: The Silent Memory Leak. If your Rust code allocates 20MB of memory and returns the pointer to JavaScript, JavaScript must explicitly call a `free_memory(ptr)` function (exported by Rust) when it finishes. If the JavaScript developer forgets, that 20MB is permanently leaked. After a few hundred calls, the browser tab will crash with an OOM error.
-*   **Tradeoffs (FFI Overhead vs. Execution Speed)**: Passing massive strings via pointers is fast, but invoking a WASM function across the FFI boundary still carries a ~10-nanosecond penalty. If you call a WASM function 10 million times inside a tight JavaScript `for` loop, the boundary overhead will completely obliterate the Rust execution speed gains.
-*   **Constraints**: Single-Threaded Limitations. By default, WASM runs on a single thread. While `wasm-bindgen-rayon` exists, utilizing physical hardware threads inside the browser or Node.js requires `SharedArrayBuffer` headers, which trigger severe Cross-Origin Isolation (CORS) security restrictions.
 *   **Best Practices**: Only cross the FFI boundary for massive, monolithic computations. Pass the pointer once, execute all the heavy lifting in Rust, and pass the result back. Never use WASM for microscopic operations.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The Linear Memory Boundary. When JavaScript passes a 5MB image string to a WASM Rust module, it cannot pass a reference. JavaScript uses garbage-collected V8 memory, while WASM operates in a strictly isolated, contiguous array of bytes (Linear Memory). You must serialize the JS string to UTF-8, allocate capacity inside WASM, and execute an expensive `memcpy` across the FFI boundary.
+*   **Advanced Implications**: Zero-Copy WASM and the Shared Memory Proposal. To completely eliminate the FFI serialization penalty, hyperscale architectures leverage the `WebAssembly.Memory` object directly from JavaScript. By treating the WASM Linear Memory as an `Uint8Array` in JS, you can write video streams or complex JSON structures directly into the physical memory addresses that Rust is simultaneously reading via raw pointers (`*const u8`). This achieves true zero-copy execution, allowing Rust to process gigabytes of data in the browser at native x86 speeds without ever triggering the V8 Garbage Collector.

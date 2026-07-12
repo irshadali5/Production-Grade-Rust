@@ -146,3 +146,19 @@ flowchart LR
 > **Scenario:** You are iterating through the HNSW graph in Rust. You look up a neighbor node in your `HashMap<u64, HnswNode>`. You calculate the dot product. Performance profiling reveals you have a terrible IPC (Instructions Per Cycle) of 0.4 due to massive L3 Cache Misses. Why is `HashMap` bad for graph traversal?
 
 *Hint: A standard `HashMap` allocates memory non-contiguously. Node 5 might be located in physical RAM address `0xAA`, and its neighbor Node 6 might be at address `0xFF`. Every single graph step requires jumping randomly across the RAM chips, completely defeating the CPU hardware prefetcher. To build a world-class engine, you must abandon `HashMap` and allocate all vectors inside a single, massive, pre-allocated `Vec<f32>` (a flat array), converting graph pointers into basic integer indices (`node_id * 1536`), guaranteeing perfect Cache Line locality.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> ANN Search trades mathematical perfection (Recall) for sub-millisecond response times.
+
+*   **Edge Cases**: Graph Disconnection (Orphaned Nodes). During HNSW graph construction, if vectors are inserted in a highly specific, adversarial geometric order, it is mathematically possible for regions of the graph to become completely disconnected from the main enter point. The search algorithm will silently fail to traverse into those regions, completely blinding the AI to millions of relevant documents.
+*   **Best Practices**: Aggressively utilize Product Quantization (PQ) and memory-map (`mmap`) the compressed Centroid indices directly into the Linux Page Cache. This ensures that the billion-scale index never exceeds physical RAM and the CPU prefetcher is constantly fed by the kernel.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Euclidean Distance vs Cosine Similarity. Calculating distance in 1,536 dimensions requires executing complex floating-point mathematical equations sequentially on every single coordinate.
+*   **Advanced Implications**: AVX-512 SIMD Intrinsics. Standard Rust math compiles to scalar instructions (one calculation per clock cycle). For extreme vector search speeds, you must physically map your vector arrays to 512-bit hardware registers using `core::arch::x86_64::_mm512_add_ps`. This executes 16 floating-point calculations simultaneously in a single microscopic clock cycle. Failing to explicitly leverage SIMD intrinsics in a Vector Database guarantees your system will be mathematically crushed by hardware-optimized competitors.

@@ -123,3 +123,11 @@ By defining our `sqlx` database models using these Newtypes, we guarantee that i
 *   **Best Practices**: 
     1. Implement the **Expand/Contract Migration Pattern**. Phase 1: Add the new column (Expand). Phase 2: Deploy code that writes to both columns. Phase 3: Deploy code that reads only from the new column. Phase 4: Drop the old column (Contract).
     2. Liberally use the `derive_more` crate to auto-generate `Display`, `From`, and `Deref` traits for your Newtypes to reduce boilerplate friction.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Schema Versioning vs Blue/Green Deployments. Applying database migrations natively via standard sequential SQL scripts blocks the CI/CD pipeline if the table is massively large. Adding a new column with a default value to a 1-billion-row Postgres table will acquire an `AccessExclusiveLock`, completely freezing all read and write traffic for hours.
+*   **Advanced Implications**: Zero-Downtime DDL (Data Definition Language). To perform schema migrations at hyperscale without dropping packets, you cannot rely on simple ORM migration scripts. You must write raw, highly specific SQL using non-blocking DDL syntax (e.g. creating the column without a default, backfilling the data asynchronously in small batches via background Rust workers, and only then enforcing the `NOT NULL` constraint). You must deeply understand Postgres Multi-Version Concurrency Control (MVCC) to ensure your migrations do not trigger table-wide rewrites.

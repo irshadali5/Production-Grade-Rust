@@ -122,3 +122,19 @@ Wasmtime Fuel requires the compiler to inject `fuel -= 1` instructions throughou
 > **Scenario:** You run `Wasmtime` to instantiate a sandbox for every single HTTP request. The cold start time is 0.5ms. However, under load testing (10,000 req/sec), your Rust server OOM crashes. You notice that memory allocation scales linearly with the number of requests, even though the sandboxes are supposed to be destroyed. Why?
 
 *Hint: Calling `Module::new(engine, wasm_bytes)` invokes the Cranelift JIT Compiler. This is an extremely heavy operation that allocates memory to store the compiled machine code. If you JIT compile the user's WASM binary on every single HTTP request, you will exhaust your RAM instantly. You must compile the module exactly once at deployment time, store the compiled `Module` object in an `Arc`, and clone it. Instantiating a pre-compiled module (`linker.instantiate`) is lightning fast and memory efficient.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> WASM isolates memory effectively, but multi-threading APIs are severely restricted.
+
+*   **Edge Cases**: Non-Deterministic Floating Point Math. While WASM is designed to be perfectly reproducible, specific operations like `NaN` bit-patterns or hardware-specific trigonometric rounding (`sin`, `cos`) can produce mathematically different byte patterns on ARM vs. x86 CPUs, completely destroying the determinism required for decentralized blockchain execution or state-machine replication.
+*   **Best Practices**: Embrace the WASI (WebAssembly System Interface) capability-based security model. Never inject raw OS sockets or file descriptors into the sandbox. Strictly provide the absolute minimum virtualized streams required to read the HTTP request and write the HTTP response, guaranteeing mathematical immunity against container escape vulnerabilities.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Fuel Metering vs OS Preemption. If a user uploads an untrusted WASM module containing an infinite `while(true)` loop, the host Rust thread will mathematically hang forever, destroying edge availability.
+*   **Advanced Implications**: Instruction Fuel Injection. The `wasmtime` runtime solves this mathematically by injecting "Fuel". You pre-allocate 10,000 Fuel units to the execution sandbox. Before executing any WASM assembly instruction, the engine automatically subtracts Fuel. When Fuel hits 0, the engine physically halts the instruction pointer, throws a `Trap`, and forcefully reclaims the CPU core. This guarantees that malicious edge functions can never steal CPU cycles beyond their strictly allotted computational quota.

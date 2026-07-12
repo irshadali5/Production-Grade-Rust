@@ -148,3 +148,11 @@ By combining LLVM-level memory zeroization with the mathematically sound polynom
 *   **Best Practices**: 
     1. Do not write lease renewal logic manually in Rust. Deploy the **Vault Agent Sidecar** in Kubernetes. The sidecar handles the complex network retries and securely writes the ephemeral token to an in-memory `tmpfs` volume shared with the Rust container.
     2. Set the TTL short enough to mitigate theft (e.g., 1 hour), but long enough to survive a temporary Vault outage.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Ephemeral State and `tmpfs`. Storing a decrypted Vault token on a standard hard drive leaves physical magnetic traces. Using a `tmpfs` volume physically mounts the directory into RAM, ensuring that if the server loses power or is physically stolen, the plaintext secret ceases to exist in the universe.
+*   **Advanced Implications**: Memory Pinning and `mlock`. Even if you hold the database password strictly in a Rust `String` (RAM), the Linux Kernel's Virtual Memory manager can page that memory out to the physical swap file on the SSD during high memory pressure. A stolen SSD now contains your production database credentials. For highly sensitive cryptographic architectures, you must execute the `mlock()` system call on the memory address containing the secret. This physically forbids the Linux kernel from ever paging the bytes to disk, guaranteeing it remains trapped entirely in volatile RAM until the `Drop` trait forcefully overwrites the memory with zeroes (`zeroize` crate).

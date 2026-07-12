@@ -121,6 +121,12 @@ flowchart LR
 > The Singleflight algorithm creates massive asynchronous waiting queues in memory.
 
 *   **Edge Cases**: The Poisoned Cache. If the Leader request executes the database query, but the database returns an erroneous result (e.g., an empty array due to a transient lock), Singleflight will flawlessly and instantly broadcast this poisoned data to all 1,000 waiting clients. You must strictly validate the Leader's payload before broadcasting.
-*   **Tradeoffs (Complexity vs. Load)**: Implementing Singleflight requires `tokio::sync::broadcast` channels, lock-free `DashMap` implementations, and complex asynchronous lifetimes. It introduces significant software complexity compared to a simple `get_or_set` cache function.
-*   **Constraints**: Memory Limits. If the database physically locks up and takes 60 seconds to respond, Singleflight will gracefully queue 60,000 requests in memory (holding 60,000 active TCP connections). You must still implement an aggressive Timeout Layer above the Singleflight mechanism to prevent OOM exhaustion.
 *   **Best Practices**: Combine Singleflight with **Stale-While-Revalidate (SWR)**. Serve the slightly expired cached data immediately to the 999 users, while the Leader asynchronously fetches the fresh data from the database in a detached background Tokio task. This yields 0ms latency for all users.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The Cache Stampede. When a highly popular cache key (e.g., the front-page news feed) expires in Redis, 10,000 concurrent HTTP requests might hit the API at the exact same millisecond. They all see a cache miss. All 10,000 requests query the SQL database simultaneously for the exact same data. The database CPU hits 100% and crashes instantly.
+*   **Advanced Implications**: Request Coalescing (Singleflight). To defeat the Stampede, the Rust server maintains an asynchronous `DashMap` (a concurrent hashmap) of actively running queries. When Request 1 queries the DB, it stores a `tokio::sync::watch` channel in the map. When Requests 2 through 10,000 arrive, they check the map, see that Request 1 is already fetching the data, and they physically yield their Tokio tasks, subscribing to the channel. When Request 1 finishes, it broadcasts the payload over the channel to all 9,999 sleeping tasks simultaneously. A 10,000-query database DOS attack is algorithmically reduced to exactly 1 query.

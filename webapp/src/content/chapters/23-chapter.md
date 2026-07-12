@@ -112,6 +112,12 @@ Why this specific prime? Generating keys requires heavy modular arithmetic. By c
 > Generating Ephemeral Keys for every microservice request introduces massive CPU overhead.
 
 *   **Edge Cases**: Replay Attacks. If an attacker intercepts the encrypted ciphertext payload, they cannot decrypt it, but they *can* blindly resend the exact same encrypted packet to the server a thousand times (e.g., triggering a "Transfer $50" command 1,000 times). The decrypted payload must internally contain a cryptographic nonce or strict timestamp to reject historical replays.
-*   **Tradeoffs (CPU Overhead vs. PFS)**: Generating a completely new Ephemeral Elliptic Curve Keypair for every single network session adds significant mathematical overhead. At 100,000 requests per second, you are trading billions of CPU cycles for the absolute guarantee of Perfect Forward Secrecy.
-*   **Constraints**: The Entropy Pool Exhaustion. Generating mathematically secure private keys requires raw, physical randomness (entropy) from the OS kernel (`/dev/urandom`). In highly constrained environments (like Alpine Linux containers immediately upon boot), the kernel's entropy pool can physically exhaust, causing the key generation to block indefinitely until hardware interrupts generate more randomness.
 *   **Best Practices**: Implement Authenticated Encryption with Associated Data (AEAD) using `ChaCha20-Poly1305` instead of `AES-GCM` on architectures (like older ARM chips) that lack dedicated hardware AES acceleration instructions. This ensures maximum encryption throughput without compromising cryptographic integrity.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Nonce Reuse. In AEAD ciphers like `ChaCha20-Poly1305`, the Nonce (Number Used Once) is a critical 96-bit value. If you encrypt two different messages using the exact same Key and the exact same Nonce, the underlying mathematical XOR stream is identical. An attacker can trivially XOR the two ciphertexts together, completely shattering the encryption without ever knowing the key.
+*   **Advanced Implications**: The XChaCha20 Extended Nonce. Generating a unique 96-bit Nonce randomly carries a statistical probability of collision (the Birthday Paradox) when encrypting millions of messages. To mathematically guarantee security at hyperscale, you must transition to `XChaCha20-Poly1305`. This variant expands the Nonce from 96 bits to 192 bits. A 192-bit random number space is so astronomically vast that you can randomly generate Nonces forever without any statistical risk of collision, safely unlocking the ability to use stateless random number generators in massive distributed architectures.

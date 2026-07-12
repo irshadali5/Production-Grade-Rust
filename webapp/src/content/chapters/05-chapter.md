@@ -121,3 +121,11 @@ Crucially, PgBouncer is configured in **Transaction Mode**. When Rust Task A sen
 *   **Tradeoffs (Compile-time SQL vs. Build Times)**: `sqlx` forces the Rust compiler to physically connect to a live Postgres database over TCP during `cargo build`. If you have 500 queries, this adds seconds to your compile time, slowing down the feedback loop.
 *   **Constraints**: CI/CD Pipelines. Your GitHub Actions pipeline will not have a live database running during the `cargo check` phase. You are forced to maintain a `.sqlx` JSON manifest directory using `cargo sqlx prepare`. This offline manifest frequently causes massive Git merge conflicts in large teams.
 *   **Best Practices**: Run `cargo sqlx prepare` automatically in a pre-commit Git hook. In production, absolutely mandate the use of PgBouncer Transaction Mode; never allow a Tokio application to connect directly to the raw Postgres port at hyperscale.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Connection Pooling and the Thundering Herd. A standard Tokio web server might spawn 10,000 asynchronous tasks. If all 10,000 tasks simultaneously attempt to check out a Postgres connection from a pool of 50, the lock contention will cause massive latency spikes.
+*   **Advanced Implications**: PgBouncer, Transaction Pooling, and Prepared Statement Leaks. When deploying PgBouncer in `Transaction Mode` (the only viable hyperscale configuration), it multiplexes 10,000 logical connections onto 50 physical connections. However, `sqlx` heavily relies on Postgres Prepared Statements. If Connection A prepares a statement on Physical Socket 1, and Connection B executes it on Physical Socket 2 (due to PgBouncer swapping the underlying sockets mid-transaction), Postgres throws a catastrophic `prepared statement does not exist` error. You must explicitly configure `sqlx` to disable prepared statement caching (`.pipeline_batches(false)`) when operating behind a high-frequency TCP multiplexer, trading a minor parsing penalty for absolute architectural stability.

@@ -147,3 +147,19 @@ flowchart TD
 > **Scenario:** You have a 3-node Raft cluster. Node 1 (Leader) crashes. Node 2 and Node 3 hold an election. Node 2 becomes the new Leader. Two minutes later, Node 1 reboots. It still thinks it is the Leader! It immediately sends an `AppendEntries` RPC to Node 2, commanding it to overwrite its logs. What happens?
 
 *Hint: Raft depends heavily on the Monotonically Increasing `Term` integer. When Node 2 was elected, it incremented its `current_term` to Term 5. When Node 1 reboots, it sends an RPC claiming to be the Leader of Term 4. Node 2 parses the `Term 4` packet, mathematically sees that `4 < 5`, and instantly rejects the RPC, replying with an error containing the new Term 5. Node 1 receives the error, realizes its Term is outdated, instantly demotes itself back to a Follower, and synchronizes the missing data.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Distributed consensus sacrifices latency for absolute data integrity.
+
+*   **Edge Cases**: The Network Partition Split-Brain. If the network drops packets symmetrically (A can talk to B, but B cannot talk to C), Raft can enter a pathological election loop where nodes constantly timeout and increment their terms, permanently freezing all writes to the cluster because a stable Leader can never be maintained.
+*   **Best Practices**: Separate the WAL disk physically from the Data disk. Mount an entirely dedicated NVMe drive strictly for the append-only WAL to prevent background compaction read I/O from stuttering the hyper-latency-sensitive `fsync` operations on the core engine.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: `fsync` vs `fdatasync`. Standard `fsync` flushes both data and file metadata (timestamps) to disk. In a high-speed WAL, updating the timestamp on every write requires a second physical disk seek, artificially halving IOPS.
+*   **Advanced Implications**: Group Commit Mathematics. `fdatasync` only flushes the data, but doing it for every single 10-byte `SET` command still obliterates NVMe SSDs. You must implement Group Commits. The Rust server accepts 10,000 requests into an asynchronous `std::collections::VecDeque`, waits exactly 1 millisecond, writes all 10,000 commands to the WAL as a single contiguous block, and executes a single `fdatasync`. You trade 1ms of latency for a 10,000x increase in disk write throughput.

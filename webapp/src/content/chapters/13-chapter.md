@@ -93,6 +93,12 @@ When this statically linked binary is placed inside an empty `scratch` image, it
 > The `musl` C-library handles DNS resolution fundamentally differently than `glibc`.
 
 *   **Edge Cases**: DNS Resolution Glitches. `musl` has historically struggled with TCP DNS queries, large DNS responses, and complex IPv6 configurations. If your Rust application relies heavily on querying external APIs with round-robin DNS, you may experience mysterious network timeouts.
-*   **Tradeoffs (Isolation vs. Binary Size)**: Statically linking all dependencies (especially heavy C/C++ libraries like OpenSSL) creates massive binaries (often >50MB). You must strip the binary (`strip = true` in `Cargo.toml`) and use Link-Time Optimization (LTO) to keep the container size manageable.
-*   **Constraints**: C-ABI Incompatibility. Certain high-performance crates rely on proprietary C libraries (like Oracle DB drivers or closed-source media codecs) that refuse to compile against `musl`. You physically cannot use them in a `scratch` image.
 *   **Best Practices**: Use `rustls` (a pure-Rust TLS implementation) instead of `openssl` (which requires `pkg-config` and C bindings). This completely eliminates C-dependency linking nightmares and compiles perfectly to the `musl` target out of the box.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: `glibc` vs `musl` Dynamic Linking. Standard Rust binaries compile dynamically against `glibc` (the GNU C Library). If you compile on Ubuntu (`glibc 2.35`) and deploy a 15MB binary to a `scratch` container, the binary immediately segfaults because `libc.so.6` is physically missing from the container image. Compiling against `x86_64-unknown-linux-musl` mathematically bundles the entire standard library into the binary itself.
+*   **Advanced Implications**: The `malloc` Allocator Contention. By default, `musl` libc uses a highly simplistic memory allocator. Under massive multi-threaded Tokio loads, the `musl` allocator suffers from extreme lock contention, tanking HTTP throughput by up to 50% compared to `glibc`. To achieve C10M hyperscale while retaining the security of `scratch` containers, you must explicitly override the global allocator in your `main.rs` to use `jemalloc` or `mimalloc` (the allocators used by Redis and Windows), completely bypassing the naive `musl` memory management algorithms.

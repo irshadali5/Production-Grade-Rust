@@ -113,6 +113,12 @@ How does `wasmtime` execute WASM at near-native speeds? It does not interpret th
 > The WebAssembly sandbox requires explicit instruction limiting to prevent Host Thread Starvation.
 
 *   **Edge Cases**: Clock Manipulation. Even if file and network access is mathematically blocked via WASI, if the WASM module is allowed to read the high-resolution system clock (via `clock_time_get`), a sophisticated attacker can still execute Side-Channel Timing Attacks against the host CPU's L1 cache. You must explicitly strip the clock capability in high-security environments.
-*   **Tradeoffs (Binary Size vs. Extensibility)**: Because WASM sandboxes cannot dynamically link to OS libraries (like OpenSSL or `glibc`), absolutely all dependencies must be statically compiled directly into the `.wasm` binary file. A relatively simple HTTP client plugin can easily compile to a massive 15MB file, introducing network payload latency when distributing plugins to edge nodes.
-*   **Constraints**: Multithreading Limitations. The `wasm32-unknown-unknown` target is currently strictly single-threaded. While the WASM Threads proposal exists, it requires `SharedArrayBuffer` memory support, which introduces immense architectural complexity for the Rust host runtime to maintain isolation boundaries.
 *   **Best Practices**: Define a strictly typed binary interface between the Rust host and the WASM plugin using the `WIT` (Wasm Interface Type) standard and the `bindgen` macro. Never rely on raw pointer manipulation to pass complex data structures (like JSON strings) across the FFI boundary, as it introduces severe memory corruption risks.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: WASM Host-Guest Isolation. In a WASM plugin architecture, if a plugin panics, it only crashes its isolated sandbox, leaving the host Rust proxy completely unaffected. However, every time a host calls a WASM plugin function, it must create a new execution context.
+*   **Advanced Implications**: Cranelift vs LLVM JIT Compilation. Running WASM requires a runtime (like Wasmtime). When you load a `.wasm` file, the runtime compiles it to native machine code. You can choose different compilers. Cranelift compiles exceptionally fast (microseconds) but produces slightly unoptimized assembly. LLVM produces mathematically perfect, highly optimized assembly but takes seconds to compile. In a dynamic edge-computing environment where you load thousands of different user-uploaded WASM plugins on the fly, you must use Cranelift to avoid blocking the host thread for seconds while JIT-compiling the guest code.

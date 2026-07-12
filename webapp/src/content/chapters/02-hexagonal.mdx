@@ -154,3 +154,11 @@ This unlocks absolute testability. During CI/CD, we can create an `InMemoryUserR
 *   **Tradeoffs (Purity vs. Boilerplate)**: You must write explicit data-mapping layers. You cannot pass a database row struct directly to the Domain; you must map it into a pure Domain Entity. You cannot pass a Domain Entity directly to an Axum JSON response; you must map it to an HTTP DTO (Data Transfer Object). This effectively doubles the number of structs you must maintain.
 *   **Constraints**: Performance overhead of dynamic dispatch. Using `Box<dyn Trait>` requires a VTable pointer lookup at runtime, which prevents the Rust compiler from inlining functions, costing a few nanoseconds per call.
 *   **Best Practices**: In 99% of web applications, the nanosecond overhead of `Box<dyn Trait>` is completely irrelevant compared to network I/O. However, in extreme hot-paths (e.g., game engines or high-frequency trading), prefer **Static Dispatch** via generics (`impl Trait`) to force the compiler to generate monomorphized, zero-cost machine code, at the expense of slower compile times.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: Trait Objects vs. Generics. Hexagonal Ports are defined using Rust Traits (e.g., `trait UserRepository`). Injecting these dependencies via `Box<dyn UserRepository>` (Dynamic Dispatch) provides maximum flexibility and faster compile times, but incurs a tiny runtime pointer-dereference penalty.
+*   **Advanced Implications**: LTO (Link-Time Optimization) and Monomorphization Bloat. If you switch to Static Dispatch (`impl UserRepository`), the compiler physically duplicates the assembly code for every concrete implementation (Monomorphization). In massive enterprise codebases, this can cause the final binary size to bloat exponentially, crashing the Instruction Cache (I-Cache) on the CPU. The CPU spends more time swapping assembly code from RAM into the L1 I-Cache than actually executing the instructions. Dynamic Dispatch (`Box<dyn>`) is often *faster* at extreme scale because the single, compact assembly function stays permanently hot in the L1 Cache.

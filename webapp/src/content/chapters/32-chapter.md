@@ -129,6 +129,12 @@ Your Rust application simply pushes structs into the RAM buffer. The kernel thre
 > Asynchronous kernel memory bypassing introduces catastrophic Use-After-Free risks if buffer lifetimes are mismanaged.
 
 *   **Edge Cases**: Disk Queue Exhaustion. If you submit 100,000 asynchronous file writes to `io_uring` simultaneously, the Linux kernel will aggressively execute them. If the physical NVMe disk cannot keep up with the IOPS, the kernel will exhaust its internal memory queues and potentially trigger a kernel panic or system freeze due to massive I/O backpressure.
-*   **Tradeoffs (Complexity vs. Context Switches)**: `io_uring` is notoriously difficult to program correctly. You must manually manage the lifetimes of shared memory buffers and carefully synchronize Ring buffer polling. You trade the extreme simplicity of standard `async/await` network I/O for the absolute maximum physical hardware throughput.
-*   **Constraints**: Legacy Kernel Compatibility. `io_uring` requires a very modern Linux kernel (5.1+). If you deploy your Rust binary to older enterprise environments (like RHEL 7 or CentOS), the system call will physically fail, and your application will instantly crash unless you implement a complex fallback architecture to `epoll`.
 *   **Best Practices**: Utilize `tokio-uring`. Instead of writing raw unsafe C-style buffer manipulations, leverage the emerging Rust ecosystem built on top of `io_uring`. This provides a safe, idiomatic API that mathematically guarantees memory pinning (`FixedBuf`) and physically prevents terrifying Use-After-Free kernel corruption bugs.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The `epoll` Context Switch Tax. In standard asynchronous Rust (`tokio`), when reading a file, the `epoll` system call requires a physical context switch. The CPU halts User Space, jumps to Kernel Space, checks the file descriptor, and jumps back. At millions of I/O operations per second, these thousands of context switches generate massive CPU heat and latency.
+*   **Advanced Implications**: Zero-Copy Ring Buffers. `io_uring` fundamentally changes how Linux I/O works. The Rust application and the Linux Kernel map a shared block of physical memory (the Ring Buffer). To read a file, Rust writes a "Submission Queue Entry" (SQE) directly into the shared memory and continues executing. The Kernel asynchronously reads the memory, fetches the disk sector, and writes a "Completion Queue Entry" (CQE) back into the shared memory. There are mathematically **zero system calls** and **zero context switches**. Rust simply polls its own local RAM to see if the kernel has finished the physical hardware request, unlocking extreme NVMe SSD throughput capabilities previously impossible in Linux.

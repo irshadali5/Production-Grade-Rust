@@ -81,6 +81,12 @@ When running multiple replicas of a Pod, how does the Kube-Proxy route traffic e
 > Misconfigured `cgroups` will silently throttle your application's CPU or indiscriminately kill your processes.
 
 *   **Edge Cases**: The OOM-Killer Blind Spot. When a physical server runs out of RAM, the Linux Kernel's OOM-Killer executes. However, it doesn't always target the offending Rust process. Sometimes, it calculates that killing a critical system daemon (like the Kubelet itself) frees up more memory, crashing the entire physical node and causing a catastrophic "NotReady" state in K8s.
-*   **Tradeoffs (Limits vs. Requests)**: If you set `resources.limits.cpu == resources.requests.cpu` (Guaranteed QoS), the Kubelet strictly pins your Pod to specific physical CPU cores. This prevents context-switching but completely disables CPU bursting. You trade peak traffic handling capacity for deterministic minimum latency.
-*   **Constraints**: The Page Cache Illusion. As noted, `cgroups` memory controllers account for both Heap RAM *and* the OS Page Cache. If your Kubernetes limit is strictly tuned to your heap size, background Linux disk caching will inevitably push the container over the limit, resulting in random, unexplainable OOMKilled events.
 *   **Best Practices**: Always run Rust binaries in K8s as `nonroot` users with `readOnlyRootFilesystem: true`. If an attacker discovers a Remote Code Execution (RCE) vulnerability in your Rust API, they physically cannot write malware payloads or modify configuration files on the container's disk.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The OOMKilled Mystery. A Rust application using 50MB of heap memory might suddenly get OOMKilled by Kubernetes despite having a 200MB limit. This happens because the Linux Kernel's `cgroups` (Control Groups) v1 memory controller fundamentally lacks visibility into the difference between Application RAM and OS Page Cache.
+*   **Advanced Implications**: `cgroups` v2 and eBPF Tracing. When your Rust application writes massive log files to the container's disk, the Linux kernel caches those writes in the Page Cache (RAM). In Kubernetes using older `cgroups`, this Page Cache counts against your Pod's memory limit. To survive hyperscale, you must force Kubernetes nodes to use `cgroups` v2, which introduces the `memory.oom.group` feature and separates cache from heap. Furthermore, you must deploy eBPF (Extended Berkeley Packet Filter) probes into the kernel to trace exactly which system calls are triggering page cache explosions, bridging the observability gap between your Rust application and the raw OS memory manager.

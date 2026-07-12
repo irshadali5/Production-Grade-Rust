@@ -129,6 +129,12 @@ async fn trade_actor(mut rx: mpsc::Receiver<Order>, tx: mpsc::Sender<Receipt>) {
 > The Actor Model physically decouples execution, making tracing and debugging exceptionally difficult.
 
 *   **Edge Cases**: The Phantom Disconnect. Mobile clients driving through tunnels will drop TCP packets without sending a formal `FIN` packet. The TCP socket remains technically "open" on the server indefinitely. You must implement Application-Level Ping/Pong heartbeats to physically kill dead Actors, otherwise you will leak thousands of Tokio tasks.
-*   **Tradeoffs (Isolation vs. Memory)**: Spawning a dedicated Tokio task (Actor) and an MPSC channel for every single WebSocket consumes roughly 2KB to 10KB of RAM. Serving 1 million concurrent users requires several Gigabytes of RAM just for the Actor routing overhead.
-*   **Constraints**: Global Broadcasting. If you need to send a single system-wide alert to all 1,000,000 connected users, looping through a `DashMap` and executing `tx.send().await` 1 million times will take several seconds and block the broadcast loop.
 *   **Best Practices**: For global broadcasts, bypass the individual MPSC Actors entirely. Use a centralized `tokio::sync::broadcast` channel that all WebSockets subscribe to directly, allowing the OS and Tokio to multiplex the fan-out efficiently.
+
+## 8. Intermediate & Advanced Systems Deep Dive
+
+> [!NOTE]
+> Bridging the gap between software abstractions and physical hardware mechanics.
+
+*   **Intermediate Concept**: The TCP Keep-Alive Illusion. When dealing with millions of WebSockets over mobile networks, the physical TCP connection often silently drops without sending a `FIN` packet. The Rust server still believes the socket is `ESTABLISHED` and holds the `tokio` task in RAM indefinitely.
+*   **Advanced Implications**: Application-Level Ping/Pong. You cannot rely on OS-level TCP Keep-Alives (which often default to 2 hours). You must implement an aggressive application-level Ping/Pong loop directly in the WebSocket frame protocol. If the client fails to respond to a Ping within 30 seconds, the server must forcefully terminate the socket, executing a `Drop` on the Actor to mathematically guarantee memory reclamation during mobile network failure storms.
