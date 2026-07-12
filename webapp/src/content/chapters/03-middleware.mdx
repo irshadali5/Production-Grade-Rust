@@ -53,6 +53,16 @@ pub trait Service<Request> {
 ```
 
 This trait defines a profound two-step execution process:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Polling: System Receives Request
+    Polling --> Polling: poll_ready() == Pending (Backpressure)
+    Polling --> Ready: poll_ready() == Ready
+    Ready --> Executing: call() (Takes Ownership)
+    Executing --> [*]: Returns Future (Response)
+```
+
 1. **`poll_ready`**: Before the server even accepts the incoming TCP packet, it calls `poll_ready`. This function returns `Poll::Ready` if the service has enough resources (RAM, DB connections, Tokio threads) to handle the request. If the server is overloaded, it returns `Poll::Pending`, mathematically halting execution and asserting **Backpressure** back to the OS socket.
 2. **`call`**: Once `poll_ready` is successful, `call` is invoked. It takes ownership of the Request, begins execution, and immediately returns a `Future` containing the eventual Response.
 
@@ -133,3 +143,15 @@ where
 # 4. The Physics of the Drop
 
 By utilizing `AtomicUsize`, we achieve lock-free concurrency control. Even if 10,000 requests arrive at the exact same microsecond, the hardware silicon manages the atomic increments across the CPU ring bus without ever acquiring a `Mutex`. If the 11th request arrives, `poll_ready` intercepts it and exerts backpressure *before* the massive HTTP payload is even parsed into memory, completely immunizing the endpoint from OOM crashes.
+
+# 5. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The ordering of your Tower middleware stack is mathematically critical. A single layer placed out of order can render the entire stack useless.
+
+*   **Edge Cases**: The Silent Hang. If an inner service panics or hangs infinitely (e.g., waiting on a deadlocked database query) and you do not have a timeout, the `BoxFuture` returned by `call` will never resolve. In our `ConcurrencyLimiter`, this means `current_concurrent.fetch_sub(1)` will *never* execute, permanently leaking a concurrency slot until the server locks up.
+*   **Tradeoffs (Robustness vs. Debuggability)**: Highly nested Tower middleware generates notoriously incomprehensible compiler errors and stack traces. If a trait bound fails 10 layers deep, `rustc` will output massive walls of text detailing the precise `Service` type mismatches.
+*   **Constraints**: `poll_ready` is synchronous (returning a `Poll`), meaning you cannot easily `await` an asynchronous operation inside it. If your readiness check requires querying a database or an external API, you must use complex polling machinery or push that logic down into the `call` phase, which defeats the purpose of early backpressure.
+*   **Best Practices**: 
+    1. **Always apply a `TimeoutLayer` at the absolute top of your stack** to guarantee that futures eventually resolve and release resources.
+    2. Pair your `ConcurrencyLimitLayer` with a `LoadShedLayer`. If you hit the concurrency limit, return a `503 Service Unavailable` immediately rather than infinitely queuing the request and exhausting the OS TCP backlog.

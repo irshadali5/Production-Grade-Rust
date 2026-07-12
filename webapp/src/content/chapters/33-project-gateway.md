@@ -84,6 +84,23 @@ async fn handle_proxy(req: Request<Body>) -> Result<Response<Body>, Infallible> 
 
 A raw proxy is dangerous. We must protect the internal VPC by wrapping our `hyper` service in a robust `tower` middleware stack. We will inject a Concurrency Limiter (to prevent OOM crashes) and an aggressive Timeout layer.
 
+```mermaid
+flowchart TD
+    subgraph Tower Middleware Stack
+      Req[Incoming HTTP Request]
+      Time[TimeoutLayer: 5 Seconds]
+      Limit[ConcurrencyLimitLayer: 10,000 max]
+      Proxy[Hyper Service: handle_proxy]
+      
+      Req --> Time
+      Time -- "Within 5s" --> Limit
+      Time -.->|Timeout| 408((408 Request Timeout))
+      Limit -- "Under Limit" --> Proxy
+      Limit -.->|Queue Full| 503((503 Service Unavailable))
+      Proxy --> Internal(VPC Services)
+    end
+```
+
 ```rust
 // src/gateway/main.rs
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};

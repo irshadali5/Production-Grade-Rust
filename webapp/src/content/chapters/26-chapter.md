@@ -73,6 +73,20 @@ This creates a mathematically perfect, self-updating API contract. We serve this
 A team using compile-time OpenAPI schema generation made a seemingly innocent change: they renamed the `user_id` field on their Rust struct to `account_id` to better reflect their new domain logic. The AST macro instantly updated the `openapi.json` schema. The backend compiled perfectly. They deployed to production. Immediately, all legacy iOS apps (which were still using the old schema SDK) crashed because the JSON payload no longer contained `user_id`. 
 **The Fix:** AST-based schema generation is a double-edged sword. Because it updates automatically, it can silently introduce **Breaking API Changes**. You must implement **Schema Diffing** in your CI pipeline. Using tools like `openapi-diff`, you mathematically compare the `main` branch AST schema against the Pull Request AST schema. If a field was removed or renamed, the CI pipeline instantly fails, forcing the developer to implement standard API Versioning (e.g., `/v2/users/`).
 
+```mermaid
+flowchart LR
+    subgraph CI Pipeline (PR Validation)
+      MainAST[Main Branch AST] --> MainJSON[main_openapi.json]
+      PRAST[Pull Request AST] --> PRJSON[pr_openapi.json]
+      
+      MainJSON --> DiffEngine(openapi-diff)
+      PRJSON --> DiffEngine
+      
+      DiffEngine -- Detects removed 'user_id' --> Fail((CI Pipeline Fails))
+      DiffEngine -.->|No breaking changes| Pass((CI Passes))
+    end
+```
+
 ## 5. Advanced Mathematical Physics: TokenStreams and the `syn` Crate
 How does a Rust Procedural Macro actually read code? When the compiler hits `#[derive(ToSchema)]`, it halts standard compilation. It hands the source code of your struct to a completely separate Rust program (the macro). This code is not text; it is a `TokenStream`—a highly structured stream of lexical tokens. The macro uses the `syn` crate to parse this stream into an AST `ItemStruct`. It then executes its own internal logic to generate *new* Rust code (the OpenAPI schema bindings) as a new `TokenStream`, which it injects back into the compiler. This metaprogramming occurs entirely in the CPU memory during compilation, adding exactly zero runtime overhead to the final binary.
 
@@ -80,3 +94,13 @@ How does a Rust Procedural Macro actually read code? When the compiler hits `#[d
 > **Scenario:** You have a heavily nested Rust struct: `Company` contains a `Vec<Department>`, which contains a `Vec<Employee>`, which contains an `Address`. You apply `#[derive(ToSchema)]` to `Company`. The compiler throws an error: `the trait bound Address: ToSchema is not satisfied`. Why?
 
 *Hint: AST procedural macros evaluate locally. The macro analyzing `Company` can see that the field is a `Vec<Department>`, but it does not have the authority to automatically rewrite the source code of the `Department` or `Address` structs located in entirely different files. You must recursively apply `#[derive(ToSchema)]` to every single nested struct in the entire hierarchy to satisfy the trait bounds of the schema generator.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> AST Procedural Macros drastically increase compilation times and can silently break dynamic typing.
+
+*   **Edge Cases**: Infinite Recursion in Self-Referencing Structs. If a Rust struct contains a recursive pointer to itself (e.g., `struct Employee { manager: Box<Employee> }`), the AST macro traversing the struct to build the OpenAPI schema will get caught in an infinite loop, crashing the compiler with a stack overflow. You must manually implement `ToSchema` or break the recursion limit.
+*   **Tradeoffs (Compile-Time vs. Runtime)**: Every time a developer saves a file, the Rust compiler must parse the AST and regenerate the JSON schema. In massive workspaces with thousands of structs, this procedural macro can add 30-40 seconds of absolute compile-time latency, destroying the rapid feedback loop of `cargo check`.
+*   **Constraints**: The `Box<dyn Trait>` Limitation. AST macros rely entirely on concrete, statically typed sizes. If your Axum route returns a dynamic trait object (`Box<dyn Serializable>`), the compiler fundamentally cannot know the memory layout at compile-time, and the OpenAPI schema generation will fail completely.
+*   **Best Practices**: Expose the generated `openapi.json` not just as a static file, but through a live Swagger UI dashboard via `utoipa-swagger-ui` mounted on `/docs`. This gives QA engineers and frontend developers a mathematically accurate, live sandbox to test the API in real-time.

@@ -88,3 +88,32 @@ To prevent these thousands of containers from overwhelming the host machine's RA
 We do not stop at testing the database; we must test the entire HTTP boundary. However, actually binding an Axum server to a real TCP port (like `127.0.0.1:8080`) during tests is prone to "Port Already in Use" errors when running tests in parallel across 16 CPU cores.
 
 Because Axum is built on the `tower::Service` trait, we bypass the TCP layer entirely. We can mathematically construct an HTTP `Request` in memory, and pass it directly into the Axum Router's `call` method. The router processes the request identically to a real network call, executing all middleware, and returns an HTTP `Response` entirely in RAM. This allows us to run thousands of full-stack integration tests in parallel with zero network latency and zero port collisions.
+
+```mermaid
+flowchart TD
+    subgraph Test Process (cargo test)
+      Req[In-Memory HTTP Request]
+      Router[Axum Router]
+      Resp[In-Memory HTTP Response]
+    end
+    
+    Req -- tower::Service::call() --> Router
+    Router -- Returns Future --> Resp
+    
+    %% Bypassing the network
+    Network[TCP / Network Stack]
+    style Network fill:#555,stroke:#333,stroke-dasharray: 5 5
+    Req -.->|Bypassed| Network
+```
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Testcontainers fundamentally requires Docker-in-Docker (DinD) capabilities, which can cripple CI/CD pipelines.
+
+*   **Edge Cases**: The Daemon Hang. If your CI runner runs out of disk space from pulling hundreds of heavy Postgres images in parallel, the Docker Daemon will silently hang. Your entire CI pipeline will freeze and time out after 60 minutes, providing absolutely zero useful error logs.
+*   **Tradeoffs (Correctness vs. Speed)**: Spinning up a physical Postgres container via the Docker socket takes approximately 1 to 2 seconds. If you have 500 integration tests, running them serially takes 15 minutes. You are trading blazing fast (but hallucinatory) SQLite mocks for mathematically correct (but slow) physical reality.
+*   **Constraints**: CI/CD Environment restrictions. Many serverless CI platforms (like AWS CodeBuild or GitHub Actions restricted runners) prohibit privileged Docker sockets due to security concerns, making Testcontainers impossible to run without complex architectural workarounds.
+*   **Best Practices**: 
+    1. Always use Alpine or Slim variants of database images (e.g., `postgres:16-alpine`) to minimize network pull times in CI.
+    2. Aggressively parallelize your integration tests using `cargo test -- --test-threads=16` (or however many cores your CI runner has), as Testcontainers' ephemeral ports guarantee zero port collisions.

@@ -82,7 +82,34 @@ The formula for Cosine Similarity is:
 `Cosine(A, B) = (A · B) / (||A|| * ||B||)`
 Calculating this using a standard Rust `for` loop over 1,536 dimensions takes roughly ~4,000 CPU clock cycles per document. However, `pgvector` and modern Rust libraries use **AVX-512 SIMD** hardware instructions. By packing 16 `f32` floats into a single physical 512-bit CPU register (`zmm0`), the CPU can perform 16 multiplications in a single nanosecond clock cycle (`vfmadd231ps`). This mathematically compresses the 4,000 cycles down to ~250 cycles, a 16x physical hardware speedup that cannot be replicated by software tricks alone.
 
+```mermaid
+flowchart LR
+    subgraph Standard CPU (Scalar)
+      Loop1[Loop i=0: f32 * f32] --> Loop2[Loop i=1: f32 * f32]
+      Loop2 --> Loop3[Loop i=2...1536]
+      Note1[1 multiplication per cycle]
+    end
+    
+    subgraph AVX-512 SIMD (Vectorized)
+      Reg[zmm0 Register: 512 bits = 16 x f32]
+      Op[vfmadd231ps instruction]
+      Reg --> Op
+      Op --> Out[16 multiplications simultaneously]
+      Note2[16 multiplications per cycle]
+    end
+```
+
 ## 7. The Architect's Challenge
 > **Scenario:** Your LLM chatbot uses HNSW to search 10 million corporate documents. A user searches for "HR Policies", but the results returned are terrible and completely unrelated. However, when you switch to an EXACT search (`ORDER BY embedding <=> query_vector`), the results are perfect. Why is the HNSW graph failing?
 
 *Hint: HNSW is an "Approximate" algorithm based on the geometric density of vectors. If your embedding space is heavily clustered (e.g., 90% of your documents are hyper-similar HR documents), the HNSW graph struggles to navigate because the distances between nodes become infinitesimally small. This is known as "Hubness". To fix this, you must increase `ef_search` (the size of the dynamic candidate list during search) to force the graph to explore deeper, trading milliseconds of CPU time for much higher recall accuracy.*
+
+## 8. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> High-dimensional vectors consume astronomical amounts of RAM.
+
+*   **Edge Cases**: The Lexical Gap. HNSW performs pure semantic search based on meaning. If a user searches for an exact alphanumeric serial number (e.g., "TX-9942-B"), the embedding model often destroys the exact lexical token, returning completely irrelevant semantic results. HNSW completely fails at exact keyword lookups.
+*   **Tradeoffs (Storage Costs vs. Dimensionality)**: 1,536-dimensional vectors (`f32`) require exactly 6,144 bytes of physical RAM each. One billion vectors require 6.1 Terabytes of expensive RAM to keep the HNSW index hot. You must trade microscopic accuracy for cost by utilizing scalar quantization (reducing `f32` floats to `i8` integers) or dimension reduction (PCA).
+*   **Constraints**: Postgres `shared_buffers` Exhaustion. `pgvector` relies entirely on the internal Postgres buffer cache for graph traversal. If your vector index exceeds your physical server RAM, the OS will aggressively swap to the NVMe disk, instantly increasing search latency from 5ms to 5,000ms.
+*   **Best Practices**: Implement **Hybrid Search**. Combine the semantic power of `pgvector` HNSW with the exact lexical matching of Postgres Full Text Search (BM25). Use a Reciprocal Rank Fusion (RRF) algorithm to mathematically merge the two result sets, achieving perfect semantic and lexical accuracy.

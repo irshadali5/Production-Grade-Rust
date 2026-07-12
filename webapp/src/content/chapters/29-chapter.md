@@ -74,7 +74,35 @@ A team deployed `cargo-flamegraph` to debug a catastrophic latency spike in prod
 While Flamegraphs show *where* time is spent, they do not show *why*. The most advanced metric in CPU profiling is **IPC (Instructions Per Cycle)**. A modern x86 CPU is superscalar; it can mathematically execute 4 distinct machine instructions simultaneously within a single clock cycle (an IPC of 4.0). If you look at `perf stat`, you might see an IPC of `0.8`. This means the CPU is physically stalling for 3 out of every 4 nanoseconds! Why? **Cache Misses**. The CPU requested memory that was not in the L1/L2 Silicon Cache, forcing it to fetch data from the slow DDR4 RAM. 
 To fix low IPC in Rust, you must reorganize your structs into contiguous arrays (`Vec<T>` instead of `Vec<Box<T>>`) to perfectly align with the CPU's 64-byte hardware cache lines, leveraging Data-Oriented Design (DOD).
 
+```mermaid
+flowchart TD
+    subgraph Data-Oriented Design (Contiguous)
+      L1_A[L1 Cache Line: 64 bytes]
+      Array[Array: A, B, C, D]
+      Array --> L1_A
+      CPU1[CPU Core] -.->|Fast Cache Hit: IPC 4.0| L1_A
+    end
+    
+    subgraph Object-Oriented Design (Fragmented)
+      L1_B[L1 Cache Line]
+      Pointer[Pointer to Heap]
+      Pointer --> L1_B
+      L1_B -.->|Cache Miss| RAM[(Main DDR4 RAM)]
+      CPU2[CPU Core] -.->|Slow RAM Fetch: IPC 0.8| RAM
+    end
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** Your Rust web server shows a massive block in the Flamegraph labeled `<std::sync::mutex::Mutex as std::ops::Drop>::drop`. This block consumes 30% of your total CPU execution time on a 64-core machine. What is physically happening, and how do you fix it?
 
 *Hint: This indicates extreme Lock Contention. You have 64 CPU cores fiercely fighting to acquire a single global Mutex. When a thread releases the Mutex (`drop`), the Linux kernel executes a `futex_wake` syscall to violently wake up all other sleeping threads fighting for the lock, resulting in a Thundering Herd. You must shard the global Mutex into an array of 64 smaller Mutexes (Lock Sharding), or eliminate it entirely by adopting a lock-free Actor Model or `DashMap`.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Hardware profiling introduces an observer effect that can skew high-frequency algorithms.
+
+*   **Edge Cases**: The Profiler Observer Effect (Heisenberg's Uncertainty Principle applied to silicon). Running `perf` introduces a microscopic CPU interruption every 1ms. If you are profiling a high-frequency trading algorithm where microsecond precision is required, the interrupt itself will subtly shift thread scheduling and hardware cache behavior, resulting in a Flamegraph that completely misrepresents the true production execution path.
+*   **Tradeoffs (Debug Symbols vs. Binary Size)**: Compiling with `debug = 1` and `force-frame-pointers = true` makes Flamegraphs readable but drastically increases the Docker image size. Furthermore, enforcing frame pointers introduces a 2-5% CPU execution penalty because the compiler is forced to disable certain inline optimizations and register allocation tricks.
+*   **Constraints**: JIT Languages & Mixed Stacks. If your Rust server embeds a V8 Javascript engine or a Lua JIT runtime, a standard `perf` Flamegraph will show a massive black box for the JIT execution because the assembly is generated in-memory dynamically. You must run specialized perf injectors (`perf map`) to synchronize the physical JIT addresses with human-readable function names.
+*   **Best Practices**: Integrate Continuous Profiling (e.g., Parca or Pyroscope) directly into your cluster infrastructure. Do not wait for a catastrophic outage to run `perf`. Constantly sample the CPU at 99Hz across all production nodes to build a historical baseline of Flamegraphs, allowing you to mathematically diff CPU consumption between software releases.

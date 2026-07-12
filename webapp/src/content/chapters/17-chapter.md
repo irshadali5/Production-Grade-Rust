@@ -94,3 +94,33 @@ When our Rust application communicates with Garnet, it uses the **Redis Serializ
 When you execute a `GET` command, Garnet returns a RESP string, for example: `$5\r\nhello\r\n`. The `$5` indicates a Bulk String of 5 bytes, followed by the Carriage Return/Line Feed (`\r\n`), followed by the exact 5 bytes of payload, followed by a final `\r\n`.
 
 To process this at 5 million operations per second, our Rust client does not parse this into a standard `String` (which would trigger a massive heap allocation). Instead, it uses zero-copy parsing. It reads the raw TCP buffer, verifies the length, and creates a lightweight slice (`&[u8]`) pointing directly into the raw network buffer. By completely bypassing the OS memory allocator, we can deserialize massive cached payloads in nanoseconds.
+
+```mermaid
+flowchart LR
+    subgraph TCP Socket Buffer
+      RawBytes["$5\r\nhello\r\n"]
+    end
+    
+    subgraph Traditional Approach
+      Alloc[Allocate String on Heap]
+      Copy[Copy 'hello' to Heap]
+    end
+    
+    subgraph Zero-Copy Approach
+      Slice[Rust Slice: &u8]
+      Pointer[Pointer points to byte 4]
+    end
+    
+    RawBytes -.-> Zero-Copy Approach
+    Slice -.->|Directly references| RawBytes
+```
+
+## 4. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The Singleflight algorithm creates massive asynchronous waiting queues in memory.
+
+*   **Edge Cases**: The Poisoned Cache. If the Leader request executes the database query, but the database returns an erroneous result (e.g., an empty array due to a transient lock), Singleflight will flawlessly and instantly broadcast this poisoned data to all 1,000 waiting clients. You must strictly validate the Leader's payload before broadcasting.
+*   **Tradeoffs (Complexity vs. Load)**: Implementing Singleflight requires `tokio::sync::broadcast` channels, lock-free `DashMap` implementations, and complex asynchronous lifetimes. It introduces significant software complexity compared to a simple `get_or_set` cache function.
+*   **Constraints**: Memory Limits. If the database physically locks up and takes 60 seconds to respond, Singleflight will gracefully queue 60,000 requests in memory (holding 60,000 active TCP connections). You must still implement an aggressive Timeout Layer above the Singleflight mechanism to prevent OOM exhaustion.
+*   **Best Practices**: Combine Singleflight with **Stale-While-Revalidate (SWR)**. Serve the slightly expired cached data immediately to the 999 users, while the Leader asynchronously fetches the fresh data from the database in a detached background Tokio task. This yields 0ms latency for all users.

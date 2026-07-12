@@ -49,6 +49,24 @@ The Controller calculates the mathematical delta between Desired (5) and Actual 
 A high-frequency trading firm deployed their Rust trading engine to Kubernetes, setting CPU limits to `2.0` (2 cores). During a market spike, their latency inexplicably jumped from 1 millisecond to exactly 100 milliseconds, completely ruining their algorithms. 
 **The Fix:** They fell victim to the `CFS` Quota math. If a Rust app spins up 8 Tokio threads, it can consume its entire `2.0` quota (200ms of CPU time) in just 25 real-world milliseconds (8 threads * 25ms = 200ms). For the remaining 75 milliseconds of the scheduler period, the Linux kernel forcefully pauses all 8 threads. No network packets are processed, resulting in a terrifying latency spike. You must *never* set CPU Limits (`limits.cpu`) on highly concurrent, latency-sensitive Rust workloads. Rely entirely on CPU Requests (`requests.cpu`) to guarantee scheduling, but allow the CPU to burst infinitely to avoid CFS throttling.
 
+```mermaid
+flowchart TD
+    subgraph Linux CFS Scheduler (100ms Period)
+      subgraph 25ms Window
+        Threads[8 Tokio Threads executing]
+        Note1[200ms of compute consumed]
+      end
+      
+      subgraph 75ms Window
+        Throttle[Threads Forcefully Parked]
+        Note2[Network packets wait in buffer]
+      end
+    end
+    
+    Threads -->|Quota Reached| Throttle
+    Throttle -.->|100ms Latency Spike| Client(Client Times Out)
+```
+
 ## 5. Advanced Mathematical Physics: The `epoll` Thundering Herd
 When running multiple replicas of a Pod, how does the Kube-Proxy route traffic efficiently? It uses `iptables` or `IPVS` rules managed by the kernel. However, if 10 Rust processes are all listening to the same shared socket (via `SO_REUSEPORT`), an incoming TCP `SYN` packet wakes up *all 10 processes* simultaneously (The Thundering Herd problem). Only one process can actually accept the connection; the other 9 wake up, fail, and go back to sleep, wasting massive CPU cycles. The modern Linux kernel mathematical solution is the `EPOLLEXCLUSIVE` flag, which guarantees that an interrupt wakes up exactly one `epoll` waiter in `O(1)` time, achieving mathematically perfect load balancing across container boundaries.
 
@@ -56,3 +74,13 @@ When running multiple replicas of a Pod, how does the Kube-Proxy route traffic e
 > **Scenario:** Your Rust API Pod is frequently crashing. You check the Kubelet logs, and it states: `Reason: OOMKilled`. You examine your Rust code; it uses a hardcoded 50MB internal cache, and memory profiling confirms the process never exceeds 100MB of RAM. However, your Kubernetes memory limit is set to a generous 300MB. Why is the Linux Kernel terminating your Pod?
 
 *Hint: The `cgroups` memory controller tracks more than just the heap memory allocated by your process. It also tracks the OS Page Cache. If your Rust application reads a massive 5GB file from disk (e.g., streaming a video to a client), Linux loads those file blocks into the kernel Page Cache to speed up future reads. In `cgroups`, Page Cache memory is charged against your Pod's limit! When the cache + heap exceeds 300MB, the kernel kills your perfectly healthy application. You must use `O_DIRECT` or `madvise` to bypass the page cache when processing massive static files in a containerized environment.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Misconfigured `cgroups` will silently throttle your application's CPU or indiscriminately kill your processes.
+
+*   **Edge Cases**: The OOM-Killer Blind Spot. When a physical server runs out of RAM, the Linux Kernel's OOM-Killer executes. However, it doesn't always target the offending Rust process. Sometimes, it calculates that killing a critical system daemon (like the Kubelet itself) frees up more memory, crashing the entire physical node and causing a catastrophic "NotReady" state in K8s.
+*   **Tradeoffs (Limits vs. Requests)**: If you set `resources.limits.cpu == resources.requests.cpu` (Guaranteed QoS), the Kubelet strictly pins your Pod to specific physical CPU cores. This prevents context-switching but completely disables CPU bursting. You trade peak traffic handling capacity for deterministic minimum latency.
+*   **Constraints**: The Page Cache Illusion. As noted, `cgroups` memory controllers account for both Heap RAM *and* the OS Page Cache. If your Kubernetes limit is strictly tuned to your heap size, background Linux disk caching will inevitably push the container over the limit, resulting in random, unexplainable OOMKilled events.
+*   **Best Practices**: Always run Rust binaries in K8s as `nonroot` users with `readOnlyRootFilesystem: true`. If an attacker discovers a Remote Code Execution (RCE) vulnerability in your Rust API, they physically cannot write malware payloads or modify configuration files on the container's disk.

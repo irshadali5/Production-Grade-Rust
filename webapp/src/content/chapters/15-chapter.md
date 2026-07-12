@@ -16,6 +16,23 @@ We eliminate this failure mode entirely using **Structured Generation** (e.g., O
 
 In Rust, we define the exact desired output format as a struct. Using the `schemars` crate, the Rust compiler analyzes this struct at compile-time and generates a mathematically rigorous JSON Schema. We inject this Schema directly into the LLM API request payload.
 
+```mermaid
+flowchart LR
+    subgraph Rust Application
+      RustStruct[Rust struct AiResponse]
+      Schemars[schemars macro]
+      SchemaJSON[JSON Schema]
+    end
+    
+    subgraph LLM API Request
+      Payload[Prompt + JSON Schema]
+    end
+    
+    RustStruct -- Compile-Time --> Schemars
+    Schemars -- Runtime --> SchemaJSON
+    SchemaJSON --> Payload
+```
+
 ```rust
 // src/ai/models.rs
 use schemars::JsonSchema;
@@ -60,3 +77,13 @@ flowchart TD
 If the JSON Schema dictates that the next character *must* be a floating-point number (for the `confidence` field), the inference engine intercepts the probability distribution. It multiplies the logits of every token that represents a letter (A-Z) or a special symbol by negative infinity. The probability of outputting an invalid token is physically crushed to absolute zero.
 
 Because the invalid tokens are mathematically erased from existence before the sampling phase, the model is physically forced to output a valid number. By utilizing Logit Masking, we guarantee with 100% mathematical certainty that the string returned by the LLM will map flawlessly to our Rust struct via `serde_json::from_str`. We have successfully converted a probabilistic AI model into a perfectly deterministic, type-safe function.
+
+## 4. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Logit Masking forces valid syntax, but it cannot force valid semantics.
+
+*   **Edge Cases**: The Deterministic Loop. If the LLM generates a mathematically valid JSON structure but fundamentally misunderstands the prompt, it might get "stuck" outputting valid but useless data in an infinite loop just to satisfy the schema. You must enforce strict token limits (`max_tokens`) to physically break the generation.
+*   **Tradeoffs (Inference Speed vs. Structure)**: Applying Logit Masking forces the inference engine to mathematically evaluate the JSON Schema constraints against the entire 100,000-token vocabulary on every single autoregressive generation step. This significantly increases GPU computational overhead, reducing inference speed by 10-20%.
+*   **Constraints**: Model Compatibility. Not all open-source models (or cloud providers) support Logit Masking natively. You must use specialized inference servers like vLLM or specialized frameworks (like Outlines) that physically intercept the HuggingFace sampling pipeline.
+*   **Best Practices**: Do not force the model to generate massive, deeply nested arrays in a single pass. Break complex JSON schemas into smaller, sequential LLM calls. This prevents context degradation and maintains high semantic accuracy while strictly enforcing syntax.

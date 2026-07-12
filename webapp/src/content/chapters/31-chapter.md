@@ -89,7 +89,33 @@ A serverless startup successfully booted 4,000 Firecracker MicroVMs on a physica
 ## 5. Advanced Mathematical Physics: Intel VT-x and EPT
 How does KVM isolate memory perfectly without software overhead? It uses **Extended Page Tables (EPT)** built into the Intel silicon. A normal Linux process uses a Page Table to translate a Virtual Memory address to a Physical RAM address. In a VM, the Guest OS thinks it controls physical RAM. EPT introduces a second, mathematically nested hardware translation. The Guest OS translates its Virtual address to a Guest Physical address. The CPU's Memory Management Unit (MMU) instantly intercepts this on the silicon logic gates, and translates the Guest Physical address to the true Host Physical address. Because this is executed purely in hardware circuits rather than software logic, memory isolation happens at wire-speed (nanoseconds) with mathematical impossibility of bypass.
 
+```mermaid
+flowchart TD
+    subgraph Software (Guest VM)
+      GuestVirt[Guest Virtual Address]
+      GuestPhys[Guest Physical Address]
+      GuestVirt -->|Guest OS Page Table| GuestPhys
+    end
+    
+    subgraph Silicon (Intel Hardware MMU)
+      EPT[Extended Page Table EPT]
+      HostPhys[True Host Physical RAM]
+      GuestPhys -->|Hardware wire-speed translation| EPT
+      EPT --> HostPhys
+    end
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** You want to run a complex Kubernetes cluster *inside* your Firecracker MicroVM. You boot the MicroVM, attempt to run K3s, and it immediately crashes, stating that `cgroups` and certain network kernel modules are missing. But the MicroVM is running a standard Linux kernel! Why?
 
 *Hint: Firecracker boots using an incredibly stripped-down, custom-compiled Linux kernel (usually lacking hundreds of legacy drivers to achieve the 125ms boot time). You provided the raw `vmlinux` binary. If your custom kernel was not compiled with `CONFIG_CGROUPS=y` or `CONFIG_VETH=y`, those features physically do not exist in the Guest OS. To run complex orchestration inside a MicroVM, you must recompile the guest Linux Kernel from source, meticulously enabling the specific compiler flags required by K8s, balancing boot speed against capability.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Hardware-level CPU exploits can shatter the isolation of Multi-Tenant VMs.
+
+*   **Edge Cases**: The Spectre/Meltdown Hardware Flaws. Because Firecracker allows multiple untrusted MicroVMs to execute on the same physical CPU core concurrently using Hyper-Threading (SMT), an attacker can use side-channel timing attacks against the L1 CPU cache to mathematically extract private encryption keys from a completely isolated MicroVM. You must disable Hyper-Threading completely on multi-tenant nodes.
+*   **Tradeoffs (Isolation vs. Boot Time)**: A Firecracker MicroVM boots in 125ms. A standard Docker container boots in 10ms. While 125ms is incredibly fast for a Virtual Machine, it is still a massive latency penalty for a cold-starting Serverless function responding to a synchronous user HTTP request.
+*   **Constraints**: Strict Storage Drivers. Firecracker strictly utilizes the `virtio-blk` paravirtualized block device. You cannot directly mount standard Kubernetes Persistent Volumes (like AWS EBS or NFS) into a MicroVM without building a highly complex, custom Virtio host-to-guest translation layer.
+*   **Best Practices**: Implement a specialized "Jailer" process for every Firecracker hypervisor. The Jailer uses Linux `cgroups` and `seccomp` filters to strictly limit the hypervisor process itself. If an attacker discovers a zero-day VM escape vulnerability in KVM, they break out of the VM only to find themselves trapped inside a secondary, unprivileged Linux jail.

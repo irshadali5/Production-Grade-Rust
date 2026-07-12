@@ -50,6 +50,28 @@ If two DevOps engineers run `terraform apply` at the exact same millisecond, the
 
 We eliminate this using a **Distributed State Lock** (typically via a DynamoDB table). Before Terraform even begins to analyze the DAG, it attempts to acquire a cryptographic lock in DynamoDB. 
 
+```mermaid
+flowchart TD
+    subgraph DevOps Engineers
+      EngA[Engineer A: terraform apply]
+      EngB[Engineer B: terraform apply]
+    end
+    
+    subgraph DynamoDB Distributed Mutex
+      LockTable[(terraform-state-lock)]
+    end
+    
+    subgraph AWS API
+      API(Infrastructure Provisioning)
+    end
+    
+    EngA -->|1. Requests Lock (Success)| LockTable
+    EngB -.->|2. Requests Lock (Fails/Blocks)| LockTable
+    
+    LockTable -->|3. Grants Exclusive Access| EngA
+    EngA -->|4. Safe Serialized Mutation| API
+```
+
 ```hcl
 # infrastructure/main.tf
 terraform {
@@ -79,3 +101,13 @@ How does Terraform know the exact order to build 10,000 AWS resources? It uses *
 > **Scenario:** Your company mandates that all AWS S3 buckets must have encryption enabled. You write the Terraform code to create 50 buckets. However, your junior developer logs into the AWS Web Console manually and disables encryption on 5 of the buckets to "test something." The next day, your CI/CD pipeline runs `terraform plan`. What exactly happens, and how does the DAG handle it?
 
 *Hint: Terraform's State File (`.tfstate`) only holds what Terraform *thinks* exists. However, during the "Refresh" phase (before constructing the DAG), Terraform calls the AWS API to verify the absolute truth. The Diff engine mathematically subtracts the AWS Reality (Unencrypted) from your HCL Code (Encrypted). The DAG will generate an execution plan containing exactly 5 API calls to `PUT` the encryption policy back onto those specific 5 buckets, automatically healing the manual drift.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Terraform accelerates the blast radius of human error to the speed of the AWS API.
+
+*   **Edge Cases**: Orphaned Resources. If you delete a resource from the HCL code, but the backend Terraform State file is simultaneously corrupted or deleted, Terraform loses its cryptographic memory of the resource. The AWS resource becomes "orphaned"—it physically exists and incurs heavy billing, but Terraform mathematically cannot see it or delete it.
+*   **Tradeoffs (Immutable Infrastructure vs. Mutable Pain)**: Terraform treats infrastructure as strictly immutable. If you change the AMI ID of an EC2 instance, Terraform will not gracefully `SSH` in and update the software; it will brutally terminate the server and boot a completely new one. You are trading zero-downtime mutability for mathematically perfect state consistency.
+*   **Constraints**: Eventual Consistency of the Cloud. AWS API calls are eventually consistent. Terraform might receive a `200 OK` that an IAM Role was created, but when the DAG attempts to attach that role to an EC2 instance 50 milliseconds later, the AWS IAM database hasn't globally synced, causing the pipeline to fail randomly. You must utilize `depends_on` carefully.
+*   **Best Practices**: Implement `terraform plan` execution directly in GitHub Pull Request comments via automation tools like Atlantis. This mathematically forces all infrastructure changes to undergo human peer review *before* the DynamoDB lock is acquired and the physical cloud is mutated.

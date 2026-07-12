@@ -123,6 +123,34 @@ impl UserRepository for PostgresUserRepository {
 
 # 5. Injection and Testability
 
+```mermaid
+flowchart LR
+    subgraph Testing Environment
+      Test[Unit Tests]
+      InMemory[(HashMap Repo)]
+    end
+    subgraph Production Environment
+      API[Axum HTTP API]
+      Postgres[(PostgreSQL Repo)]
+    end
+    subgraph Core Domain
+      Logic[Business Logic / Usecase]
+    end
+    
+    Test -->|Injects InMemory| Logic
+    API -->|Injects Postgres| Logic
+```
+
 At the very top of the application (the Composition Root), we instantiate the `PgPool`, create the `PostgresUserRepository`, and physically inject it into the Domain logic via Dynamic Dispatch (`Box<dyn UserRepository>`) or Static Dispatch (Generics).
 
 This unlocks absolute testability. During CI/CD, we can create an `InMemoryUserRepository` using a standard `HashMap`. We inject this into the Domain logic, allowing us to execute 10,000 unit tests in under 5 milliseconds, completely isolated from physical disk I/O. By utilizing Rust's strict trait system, we mathematically guarantee architectural boundaries.
+
+# 6. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Hexagonal Architecture requires a massive amount of boilerplate code to maintain pure boundaries.
+
+*   **Edge Cases**: Domain Leakage. A junior developer might accidentally return a `sqlx::Error` from the Postgres Adapter directly through the Port interface. This instantly couples the pure Domain to the database layer, destroying the architecture. All infrastructure errors *must* be mapped to pure `DomainError` enums.
+*   **Tradeoffs (Purity vs. Boilerplate)**: You must write explicit data-mapping layers. You cannot pass a database row struct directly to the Domain; you must map it into a pure Domain Entity. You cannot pass a Domain Entity directly to an Axum JSON response; you must map it to an HTTP DTO (Data Transfer Object). This effectively doubles the number of structs you must maintain.
+*   **Constraints**: Performance overhead of dynamic dispatch. Using `Box<dyn Trait>` requires a VTable pointer lookup at runtime, which prevents the Rust compiler from inlining functions, costing a few nanoseconds per call.
+*   **Best Practices**: In 99% of web applications, the nanosecond overhead of `Box<dyn Trait>` is completely irrelevant compared to network I/O. However, in extreme hot-paths (e.g., game engines or high-frequency trading), prefer **Static Dispatch** via generics (`impl Trait`) to force the compiler to generate monomorphized, zero-cost machine code, at the expense of slower compile times.

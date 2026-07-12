@@ -14,6 +14,23 @@ Our CI pipeline relies on `clippy`, but it is critical to understand the compile
 
 Because `clippy` has absolute knowledge of the exact memory layouts, types, and lifetimes of every variable, it can detect profound semantic flaws. It can mathematically prove that you are allocating a `String` on the heap inside a tight loop when a zero-cost `&str` slice would suffice. By running `cargo clippy -- -D warnings` in CI, we elevate these performance suggestions into fatal compilation errors. We systematically force developers to write optimal code, physically preventing suboptimal memory layouts from entering the `main` branch.
 
+```mermaid
+flowchart LR
+    subgraph Legacy Regex Linter
+      Code1[Source Code] --> Regex(Regex Engine)
+      Regex --> Warn1[Blind Pattern Match]
+    end
+    
+    subgraph Clippy AST Linter
+      Code2[Source Code] --> Compiler(Rust Compiler)
+      Compiler --> AST[Abstract Syntax Tree]
+      Compiler --> HIR[High-Level IR]
+      AST --> Clippy(Clippy Visitor Pattern)
+      HIR --> Clippy
+      Clippy --> Warn2[Semantic Memory Proofs]
+    end
+```
+
 ## 3. Supply Chain Security and Cryptographic Auditing
 
 Modern software development is heavily dependent on open-source libraries (crates). If a single crate deeply nested in your dependency tree is compromised (a supply chain attack), your entire production cluster is compromised.
@@ -62,3 +79,13 @@ How does `clippy` analyze 50,000 lines of code in seconds? It relies on the phys
 > **Scenario:** Your DAG pipeline is aggressively caching the `target/` directory between GitHub Actions runs based on the `Cargo.lock` hash. However, developers complain that changing a simple `println!` string inside `src/main.rs` takes 5 minutes to compile in CI, entirely bypassing the cache. Why?
 
 *Hint: Changing `src/main.rs` does not alter `Cargo.lock`. If your CI cache key relies solely on `hashFiles('Cargo.lock')`, the GitHub Actions cache system sees a cache hit and restores the `target/` directory. However, `cargo` detects that the timestamp/hash of `main.rs` has changed. Because the workspace code mutated without the lockfile changing, `cargo` invalidates the incremental cache for the binary crate and rebuilds it. For perfect CI speed, cache keys must factor in the hash of the `src/` directory, or rely on remote distributed caching tools like `sccache`.*
+
+## 8. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Hyper-strict AST linting physically slows down initial developer velocity.
+
+*   **Edge Cases**: The Flaky Test. A unit test that relies on system time, random number generators, or network latency might pass 99% of the time but fail randomly. This breaks the mathematical determinism of the CI DAG, randomly blocking production deployments. Flaky tests must be ruthlessly quarantined or deleted entirely.
+*   **Tradeoffs (Purity vs. Velocity)**: Enforcing `cargo clippy -- -D warnings` physically blocks developers from merging PRs if they use a slightly unoptimized integer type or clone a string unnecessarily. This creates immense initial friction and slows down rapid prototyping for the sake of long-term codebase purity.
+*   **Constraints**: The `Cargo.lock` Merge Conflict. In massive monorepos, if 50 engineers are adding or updating dependencies simultaneously, the `Cargo.lock` file will constantly suffer from Git merge conflicts, requiring developers to repeatedly `rebase` and re-resolve the cryptographic hashes manually.
+*   **Best Practices**: Use `cargo-deny` in addition to `cargo-audit` to mathematically enforce licensing compliance (e.g., automatically banning GPL-licensed crates in a proprietary commercial codebase) directly within the CI DAG, preventing legal catastrophes before the code is even merged.

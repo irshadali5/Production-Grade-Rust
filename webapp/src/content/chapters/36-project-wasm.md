@@ -92,6 +92,25 @@ Before invoking the WASM module, the Rust host injects 10,000 "Fuel" points into
 
 By combining Linear Memory isolation and precise CPU Fuel metering, we have built a mathematically secure, multi-tenant execution engine capable of running untrusted third-party code with zero infrastructure overhead.
 
+```mermaid
+flowchart TD
+    subgraph Wasmtime Fuel Metering
+      Host[Rust Host]
+      Fuel[Fuel Register: 10,000]
+      WASM[WASM Sandbox execution]
+      
+      Host -->|Injects 10k Fuel| Fuel
+      Fuel --> WASM
+      
+      WASM -->|ADD instruction| Dec1(Fuel - 1)
+      WASM -->|JMP instruction| Dec2(Fuel - 1)
+      
+      Dec2 -- If Fuel > 0 --> WASM
+      Dec2 -- If Fuel == 0 --> Trap((Hardware Trap: FuelExhausted))
+      Trap -.-> Host
+    end
+```
+
 ## 4. Production Post-Mortem: Reentrancy Exploits
 A multi-tenant architecture allowed WASM plugins to call back into the Rust host to query a database (`host_db_query`). A malicious plugin crafted a massive SQL injection payload and called the host function. While the host was suspended awaiting the database, the plugin maliciously manipulated the shared memory buffers. When the host resumed, it read corrupted memory, leading to a catastrophic Rust panic that brought down the entire Edge node. 
 **The Fix:** Never blindly trust memory buffers across the WASM boundary, especially during asynchronous yields. Implement strict Reentrancy Guards on your host functions, and always copy data out of the WASM Linear Memory into isolated Rust heap memory *before* initiating any asynchronous `.await` boundary.

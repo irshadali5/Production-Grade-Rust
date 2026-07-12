@@ -79,6 +79,26 @@ If the plugin suffers a memory corruption bug (like a buffer overflow) due to po
 In 2022, a security researcher found a vulnerability in a multi-tenant WASM architecture. The host application was allocating a massive 4GB contiguous block of RAM and dividing it into smaller blocks to share among multiple WASM sandboxes. Because WebAssembly uses 32-bit pointers (Wasm32), a malicious plugin could theoretically overflow its pointer arithmetic and read the memory of *another* sandbox if the host's memory boundary enforcement was flawed. 
 **The Fix:** Modern runtimes like `wasmtime` rely on OS Virtual Memory paging. Each WASM instance is granted an isolated 4GB Virtual Address Space, backed by hardware `mmap` Guard Pages. If the WASM code attempts to read memory index `4GB + 1`, the physical CPU MMU (Memory Management Unit) triggers a `SIGSEGV` (Segmentation Fault) hardware trap, instantly terminating the sandbox at the silicon level.
 
+```mermaid
+flowchart TD
+    subgraph WASM Linear Memory (Virtual Address Space)
+      Addr0[Address 0x00]
+      Valid[Valid Sandboxed Memory 4GB]
+      AddrMax[Address 0xFFFFFFFF]
+      Valid --> AddrMax
+    end
+    
+    subgraph Hardware Memory Management Unit
+      Guard[OS Guard Page unmapped memory]
+      MMU[Hardware CPU MMU]
+    end
+    
+    Malicious(Malicious WASM Plugin)
+    Malicious -->|Reads 4GB + 1 byte| Guard
+    Guard -->|Hardware Page Fault| MMU
+    MMU -.->|SIGSEGV| Kill(Terminates Sandbox instantly)
+```
+
 ## 5. Advanced Mathematical Physics: JIT Compilation vs AOT
 How does `wasmtime` execute WASM at near-native speeds? It does not interpret the WASM bytecode line-by-line. It utilizes the **Cranelift** code generator. Cranelift translates the stack-based WASM AST into a mathematical Control Flow Graph (CFG), performs SSA (Static Single Assignment) optimization, and JIT (Just-In-Time) compiles it directly into x86-64 machine code instructions before execution begins. Because Cranelift is mathematically deterministic, it guarantees that the generated x86 code contains strict bounds-checking instructions before every single memory access, enforcing the sandbox mechanically at the CPU pipeline level.
 
@@ -86,3 +106,13 @@ How does `wasmtime` execute WASM at near-native speeds? It does not interpret th
 > **Scenario:** You are allowing users to upload WASM modules to process images. You configure WASI to completely block filesystem and network access. However, a malicious user uploads a module that successfully crashes your entire Rust host process. How?
 
 *Hint: If a WASM module contains an infinite loop or performs a mathematically absurd operation (like calculating the billionth Fibonacci number), it will monopolize the OS thread. If your Rust executor is awaiting the WASM execution on a Tokio worker thread, the thread is blocked, leading to thread starvation and a Denial of Service. You must configure **Wasmtime Fuel** (a deterministic CPU cycle counter) or execute the WASM module inside a `tokio::task::spawn_blocking` thread pool to prevent the async reactor from freezing.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The WebAssembly sandbox requires explicit instruction limiting to prevent Host Thread Starvation.
+
+*   **Edge Cases**: Clock Manipulation. Even if file and network access is mathematically blocked via WASI, if the WASM module is allowed to read the high-resolution system clock (via `clock_time_get`), a sophisticated attacker can still execute Side-Channel Timing Attacks against the host CPU's L1 cache. You must explicitly strip the clock capability in high-security environments.
+*   **Tradeoffs (Binary Size vs. Extensibility)**: Because WASM sandboxes cannot dynamically link to OS libraries (like OpenSSL or `glibc`), absolutely all dependencies must be statically compiled directly into the `.wasm` binary file. A relatively simple HTTP client plugin can easily compile to a massive 15MB file, introducing network payload latency when distributing plugins to edge nodes.
+*   **Constraints**: Multithreading Limitations. The `wasm32-unknown-unknown` target is currently strictly single-threaded. While the WASM Threads proposal exists, it requires `SharedArrayBuffer` memory support, which introduces immense architectural complexity for the Rust host runtime to maintain isolation boundaries.
+*   **Best Practices**: Define a strictly typed binary interface between the Rust host and the WASM plugin using the `WIT` (Wasm Interface Type) standard and the `bindgen` macro. Never rely on raw pointer manipulation to pass complex data structures (like JSON strings) across the FFI boundary, as it introduces severe memory corruption risks.

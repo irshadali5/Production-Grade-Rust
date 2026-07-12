@@ -46,6 +46,26 @@ Instead, Node.js calls a Rust WASM function that executes `alloc` to reserve 20M
 
 Node.js writes the 20MB string directly into the WASM memory space. When Node.js invokes the WASM parser, it simply passes the memory pointer (a single 32-bit integer). The Rust code instantly executes against the memory with zero serialization, zero copying, and zero GC overhead, achieving C-level execution speeds directly inside the JavaScript runtime.
 
+```mermaid
+flowchart TD
+    subgraph Node.js (V8)
+      JSView[Uint8Array View]
+      JSCode[JavaScript FFI]
+    end
+    
+    subgraph WASM Sandbox
+      LinMem[WASM Linear Memory ArrayBuffer]
+      RustWASM[Rust Parser]
+    end
+    
+    JSCode -- 1. Calls allocate_memory() --> RustWASM
+    RustWASM -- 2. Returns raw pointer --> JSCode
+    JSCode -- 3. Creates View mapped to ptr --> JSView
+    JSView -. 4. Directly overwrites physical bytes .-> LinMem
+    JSCode -- 5. Calls parse(ptr) --> RustWASM
+    RustWASM -- 6. Reads perfectly in-place (Zero-Copy) --> LinMem
+```
+
 ```rust
 // src/wasm_ffi.rs
 use wasm_bindgen::prelude::*;
@@ -75,3 +95,13 @@ pub fn parse_markdown(ptr: *mut u8, len: usize) -> String {
     markdown_string.to_uppercase()
 }
 ```
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> WebAssembly Linear Memory is NOT garbage collected by the JavaScript V8 engine.
+
+*   **Edge Cases**: The Silent Memory Leak. If your Rust code allocates 20MB of memory and returns the pointer to JavaScript, JavaScript must explicitly call a `free_memory(ptr)` function (exported by Rust) when it finishes. If the JavaScript developer forgets, that 20MB is permanently leaked. After a few hundred calls, the browser tab will crash with an OOM error.
+*   **Tradeoffs (FFI Overhead vs. Execution Speed)**: Passing massive strings via pointers is fast, but invoking a WASM function across the FFI boundary still carries a ~10-nanosecond penalty. If you call a WASM function 10 million times inside a tight JavaScript `for` loop, the boundary overhead will completely obliterate the Rust execution speed gains.
+*   **Constraints**: Single-Threaded Limitations. By default, WASM runs on a single thread. While `wasm-bindgen-rayon` exists, utilizing physical hardware threads inside the browser or Node.js requires `SharedArrayBuffer` headers, which trigger severe Cross-Origin Isolation (CORS) security restrictions.
+*   **Best Practices**: Only cross the FFI boundary for massive, monolithic computations. Pass the pointer once, execute all the heavy lifting in Rust, and pass the result back. Never use WASM for microscopic operations.

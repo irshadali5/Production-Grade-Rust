@@ -122,6 +122,26 @@ A custom vector database written in Rust was incredibly fast, until one day a sp
 ## 5. Advanced Mathematical Physics: Product Quantization (PQ)
 Storing 100 million 1536-dimensional `f32` vectors requires ~614 GB of raw RAM (not including the massive HNSW graph pointers). This is cost-prohibitive. To achieve hyperscale, we use **Product Quantization (PQ)**. PQ splits the massive 1536-dim vector into 96 smaller sub-vectors (16 dimensions each). It runs K-Means clustering on the dataset to create 256 "Centroids" for each sub-vector. Now, instead of storing 1536 `f32` floats (6,144 bytes), we just store an array of 96 `u8` bytes (pointing to the Centroid IDs). We compress 6KB of data into 96 Bytes—a 64x mathematical compression. The cosine similarity is approximated using pre-computed lookup tables against the Centroids. This allows the Vector Database to hold billions of vectors entirely in RAM on a single cheap server.
 
+```mermaid
+flowchart LR
+    subgraph Product Quantization Compression
+      Raw[1536-dim f32 Vector: 6144 Bytes]
+      Split[Split into 96 sub-vectors]
+      
+      Raw --> Split
+      Split --> Sub1[Sub 1: 16 dims]
+      Split --> Sub96[Sub 96: 16 dims]
+      
+      Sub1 -->|K-Means| Centroid1[Centroid ID: 8 bits]
+      Sub96 -->|K-Means| Centroid96[Centroid ID: 8 bits]
+      
+      Centroid1 --> Compressed[PQ Vector: 96 Bytes]
+      Centroid96 --> Compressed
+      
+      Note[64x RAM Compression]
+    end
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** You are iterating through the HNSW graph in Rust. You look up a neighbor node in your `HashMap<u64, HnswNode>`. You calculate the dot product. Performance profiling reveals you have a terrible IPC (Instructions Per Cycle) of 0.4 due to massive L3 Cache Misses. Why is `HashMap` bad for graph traversal?
 

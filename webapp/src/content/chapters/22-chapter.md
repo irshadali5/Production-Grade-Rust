@@ -113,7 +113,40 @@ What exactly is a `Waker` at the memory level? It is incredibly cheap because it
 2. `&RawWakerVTable`: A static pointer to a table of function pointers (`clone`, `wake`, `wake_by_ref`, `drop`).
 When `epoll` calls `waker.wake()`, it performs a single pointer dereference into the VTable, jumping the CPU instruction pointer directly to Tokio's C-ABI compatible wake function. This zero-allocation architecture ensures that waking a task takes only ~10 CPU clock cycles.
 
+```mermaid
+flowchart TD
+    subgraph Epoll Thread
+      Kernel(epoll hardware event)
+      WakeCall[waker.wake()]
+    end
+    
+    subgraph RawWaker Struct
+      Ptr[Data Pointer: *const ()]
+      VTablePtr[VTable Pointer: &RawWakerVTable]
+    end
+    
+    subgraph Static VTable
+      WakeFn(wake function pointer)
+      CloneFn(clone function pointer)
+    end
+    
+    Kernel --> WakeCall
+    WakeCall --> VTablePtr
+    VTablePtr --> WakeFn
+    WakeFn -.->|Dereferences Data Ptr| Task[(Tokio Task)]
+```
+
 ## 7. The Architect's Challenge
 > **Scenario:** You implement a custom `Future` that reads from a hardware sensor. You poll the sensor, find no data, and return `Poll::Pending`. However, your Future is never polled again, even when the sensor finally has data. What did you forget?
 
 *Hint: You forgot to register the `Waker`. Returning `Poll::Pending` tells the executor to park the task, but if you do not actively store `cx.waker().clone()` somewhere (like giving it to the hardware driver's interrupt handler), the executor will never receive the `wake()` signal to put the task back on the Run Queue. The task will sleep for eternity.*
+
+## 8. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The cooperative nature of Rust's async/await requires absolute developer discipline to avoid Thread Starvation.
+
+*   **Edge Cases**: The Cancel-Safe Vulnerability. If a Tokio task is dropped mid-execution (e.g., the user violently closes their browser connection), the `Future` is instantly destroyed at the exact `.await` point. If this happens *during* a multi-step database transaction without a strict Drop-based `COMMIT/ROLLBACK` handler, the connection is returned to the pool in a corrupted, uncommitted state, permanently locking database tables.
+*   **Tradeoffs (Cooperative vs. Preemptive Multitasking)**: The Linux OS uses preemptive multitasking (it physically forces threads to stop). Tokio uses cooperative multitasking (it asks the Future to yield voluntarily via `.await`). This avoids expensive OS context switches but means a single infinite CPU `while` loop written by a junior developer will physically hijack the executor thread, dropping thousands of other users offline.
+*   **Constraints**: The `Send` Trait. To move a Future across Tokio worker threads dynamically, every single variable held across an `.await` boundary must be `Send` (thread-safe). This completely bans the use of single-threaded constructs like `std::rc::Rc` or `RefCell` in asynchronous contexts, forcing the use of slower atomic variants like `Arc`.
+*   **Best Practices**: Always use the `tokio::select!` macro to enforce strict execution timeouts on all asynchronous network operations. This mathematically guarantees that a hanging TCP connection will physically drop the Future and free the memory, preventing the executor from grinding to a halt.

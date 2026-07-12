@@ -45,6 +45,27 @@ We achieve this using Garnet Streams and the **Pending Entries List (PEL)**. Whe
 
 If Worker A is OOM-Killed by Kubernetes mid-execution, the `XACK` is never sent. A specialized Rust Supervisor Task continuously scans the cluster using the `XPENDING` command. If it finds a job that has been sitting in a PEL for more than 60 seconds, it uses the `XCLAIM` command to forcefully rip ownership of the job away from the dead worker, reassigning it to a healthy Worker B.
 
+```mermaid
+flowchart LR
+    subgraph Garnet Message Broker
+      Stream[Job Stream]
+      PEL[Pending Entries List]
+    end
+    
+    subgraph Rust Workers
+      WorkerA[Worker A]
+      WorkerB[Worker B]
+      Supervisor[Supervisor Task]
+    end
+    
+    Stream -- 1. Pulls Job --> WorkerA
+    Stream -- 2. Job moved to --> PEL
+    WorkerA -. 3. Worker Crashes (No XACK) .-> WorkerA
+    Supervisor -- 4. XPENDING finds old job --> PEL
+    Supervisor -- 5. XCLAIM reassigns job --> WorkerB
+    WorkerB -- 6. Processes & XACK --> PEL
+```
+
 ## 4. Idempotency Keys and Database Locking
 
 What if Worker A wasn't dead? What if it was merely paused by a massive 50-second Garbage Collection spike, and the Supervisor assigned the job to Worker B? Now, Worker A wakes up, and both workers attempt to charge the credit card simultaneously.
@@ -84,3 +105,13 @@ pub async fn execute_idempotent_job(
     }
 }
 ```
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Raft consensus sacrifices latency for mathematical consistency.
+
+*   **Edge Cases**: Split-Brain Isolation. If the Raft Leader is partitioned from the cluster but can still communicate with external clients, it might accept writes that it can never physically commit (because it lacks a quorum). These writes will eventually time out, but clients must be designed to retry their payloads idempotently when the network heals.
+*   **Tradeoffs (Latency vs. Consistency)**: Raft requires every single state mutation to be transmitted across the network, written to a disk WAL, and acknowledged by a majority of nodes *before* confirming success to the user. This adds unavoidable milliseconds of synchronous network latency to every write operation.
+*   **Constraints**: The Quorum Count. You must always deploy an odd number of Raft nodes (3, 5, or 7) to prevent unbreakable voting ties. Deploying 7 nodes is significantly slower than 3 because it requires 4 network ACKs instead of 2.
+*   **Best Practices**: Always use `UUIDv7` for your Idempotency Keys. `UUIDv7` is time-ordered, meaning inserts into the Postgres B-Tree are purely sequential, mathematically preventing massive index fragmentation and page splits under hyperscale load.

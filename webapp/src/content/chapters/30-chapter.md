@@ -84,7 +84,39 @@ A security engineer wrote a brilliant eBPF program to iterate over the HTTP head
 If the eBPF program lives in Kernel Space, how does the User Space Rust Axum application tell it which IP addresses to block dynamically? You cannot pass variables directly. We solve this mathematically using **eBPF Maps** (specifically BPF Hash Maps or LPM Tries). These are specialized, lock-free memory structures allocated physically in kernel RAM, but accessible from User Space via the `bpf()` syscall. 
 When your User Space Rust API detects a malicious user, it calls `bpf_map_update_elem()`. The Kernel Space eBPF program simultaneously performs a `bpf_map_lookup_elem()` on every incoming packet. This allows you to update the firewall rules of a live, running kernel dynamically with exactly zero milliseconds of downtime.
 
+```mermaid
+flowchart LR
+    subgraph User Space
+      Axum[Rust Axum API]
+      Syscall(bpf_map_update syscall)
+      Axum --> Syscall
+    end
+    
+    subgraph Kernel Space (eBPF Map)
+      Map[(Shared Hash Map: Blocked IPs)]
+      Syscall -->|Writes IP| Map
+    end
+    
+    subgraph XDP Hook
+      Pkt[Incoming Malicious Packet]
+      eBPF[eBPF Kernel Program]
+      eBPF -.->|bpf_map_lookup| Map
+      Pkt --> eBPF
+      eBPF -- "If found in Map" --> Drop(XDP_DROP)
+    end
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** You implement XDP dropping logic perfectly. Your server easily survives a 5 million packet-per-second volumetric DDoS attack. However, your Cloud Provider bill arrives, and you owe $15,000 in bandwidth ingress fees. Why didn't XDP save your money?
 
 *Hint: XDP executes on your server's physical CPU after the packet has already traveled across the internet, crossed the Cloud Provider's backbone routers, and entered your Virtual Machine's Network Interface. You successfully saved your CPU from crashing, but the raw bandwidth was still consumed at the ingress point. To mitigate volumetric attacks economically, you must use eBPF at the edge (Cloudflare/Fastly) or rely on BGP Anycast and AWS Shield to scrub the bandwidth before it hits your VPC.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> eBPF drastically widens the attack surface of the Linux Kernel.
+
+*   **Edge Cases**: The Kernel Panic Nightmare. While the eBPF Verifier guarantees your bytecode won't freeze the kernel, bugs in the *Verifier itself* (or zero-day exploits in the eBPF JIT compiler) have historically allowed attackers to escalate privileges to `root` or completely crash the physical server. You are explicitly uploading executable code into Kernel Space.
+*   **Tradeoffs (eBPF Speed vs. Application State)**: eBPF provides unparalleled speed for dropping packets, but it is incredibly difficult to write stateful logic (like tracking complex user sessions or decrypting TLS payloads). You trade complex, expressive Rust application logic for raw, brutal network-layer performance.
+*   **Constraints**: XDP Hardware Driver Support. Not all physical Network Interface Cards (NICs) support Native XDP. If the hardware driver lacks support, the kernel falls back to Generic XDP (running the eBPF program *after* allocating the socket buffer). This completely destroys the zero-copy performance benefits, rendering the optimization practically useless.
+*   **Best Practices**: Use `aya-bpf` to write your XDP programs in Rust instead of legacy C. This ensures you benefit from Rust's strict memory safety during development, significantly reducing the chances that the Linux Kernel Verifier will violently reject your bytecode during deployment.

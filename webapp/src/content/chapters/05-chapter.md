@@ -88,4 +88,36 @@ In a hyper-scale architecture, the Rust application (running on Tokio) might spa
 
 We solve this using **PgBouncer**, a lightweight middleware proxy written in C. We configure our Rust `sqlx::PgPool` (which maintains maybe 20 connections) to connect to PgBouncer. PgBouncer then maintains a very small, highly optimized pool of actual connections to Postgres (e.g., 50 connections).
 
+```mermaid
+flowchart LR
+    subgraph Rust Tokio Runtime
+      T1[Task A]
+      T2[Task B]
+      T3[Task C]
+    end
+    
+    subgraph PgBouncer Middleware
+      Pool[Transaction Pool - 50 Conns]
+    end
+    
+    subgraph Postgres Database
+      DB[(PostgreSQL)]
+    end
+    
+    T1 -- 1. BEGIN --> Pool
+    Pool -- 2. Borrows Conn --> DB
+    T1 -- 3. COMMIT --> Pool
+    Pool -. 4. Returns Conn to Pool .-> DB
+```
+
 Crucially, PgBouncer is configured in **Transaction Mode**. When Rust Task A sends a `BEGIN` statement, PgBouncer assigns it one of the 50 Postgres connections. The instant Rust Task A sends `COMMIT`, PgBouncer ruthlessly yanks the Postgres connection away and assigns it to Rust Task B. Because transactions only take a few milliseconds, a pool of 50 backend Postgres connections can easily multiplex and serve 10,000 concurrent Rust clients, mathematically preventing database memory exhaustion.
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> PgBouncer's Transaction Mode breaks Postgres Prepared Statements unless specifically configured.
+
+*   **Edge Cases**: Prepared Statement Exhaustion. By default, `sqlx` heavily utilizes Postgres `PREPARE` statements for performance. In PgBouncer Transaction Mode, the connection is swapped between clients. If Client A prepares a statement on backend connection 1, and Client B receives connection 1 later, the prepared statement might clash or be missing. You must either disable prepared statements in `sqlx` or configure PgBouncer's `server_reset_query`.
+*   **Tradeoffs (Compile-time SQL vs. Build Times)**: `sqlx` forces the Rust compiler to physically connect to a live Postgres database over TCP during `cargo build`. If you have 500 queries, this adds seconds to your compile time, slowing down the feedback loop.
+*   **Constraints**: CI/CD Pipelines. Your GitHub Actions pipeline will not have a live database running during the `cargo check` phase. You are forced to maintain a `.sqlx` JSON manifest directory using `cargo sqlx prepare`. This offline manifest frequently causes massive Git merge conflicts in large teams.
+*   **Best Practices**: Run `cargo sqlx prepare` automatically in a pre-commit Git hook. In production, absolutely mandate the use of PgBouncer Transaction Mode; never allow a Tokio application to connect directly to the raw Postgres port at hyperscale.

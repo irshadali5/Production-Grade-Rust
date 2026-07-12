@@ -11,6 +11,23 @@ In a production system, the database schema is not static; it is a living entity
 
 We eliminate this mathematically using **Strict Migrations**. Every single alteration to the database schema must be codified as a deterministic, sequential SQL file (e.g., `20240101000000_create_users_table.sql`) and committed to Git. During CI/CD deployment, our Rust application binary itself acts as the migration engine. Before binding to the TCP port to accept HTTP traffic, the Rust application queries a special `_sqlx_migrations` tracking table to determine which migrations have already been applied. It then sequentially executes only the missing migrations, utilizing Postgres' transactional DDL to guarantee that if a migration fails halfway through, the entire schema change is cleanly rolled back.
 
+```mermaid
+flowchart LR
+    subgraph Environments
+      DB1[(Staging Postgres)]
+      DB2[(Production Postgres)]
+    end
+    
+    Git[Git Repo SQL Migrations]
+    CI[CI/CD Pipeline]
+    App[Rust Binary / sqlx]
+    
+    Git --> CI
+    CI --> App
+    App -- Applies missing migrations --> DB1
+    App -- Applies missing migrations --> DB2
+```
+
 ## 2. Primitive Obsession and Domain Integrity
 
 Once the database schema is sound, we must map it to Rust. A common anti-pattern is **Primitive Obsession**. Suppose you have a function that transfers funds: `fn transfer(from_account: String, to_account: String, amount: f64)`. Because both account IDs are standard `String` types, there is absolutely nothing stopping a developer from accidentally passing the `to_account` into the `from_account` parameter, or worse, passing a user's email address instead of their account ID. The compiler will happily compile this logical error, resulting in financial catastrophe in production.
@@ -94,3 +111,15 @@ impl<'de> Deserialize<'de> for Email {
 ```
 
 By defining our `sqlx` database models using these Newtypes, we guarantee that invalid data can never be read from or written to the database. The Rust compiler becomes an impenetrable fortress around our core business logic.
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Simple migrations become lethal during rolling deployments if backwards compatibility is ignored.
+
+*   **Edge Cases**: The Rolling Deployment Crash. If Migration V2 drops a column, and you deploy V2 code, Kubernetes will perform a rolling update. For a few minutes, V1 Pods (running the old code) and V2 Pods (running the new code) exist simultaneously. The V1 Pods will instantly crash because they expect the dropped column. Migrations must be backwards compatible.
+*   **Tradeoffs (Type Safety vs. Friction)**: The Newtype pattern introduces immense ergonomic friction. Every time you need to log an ID or serialize it, you must wrap or unwrap the tuple struct (`email.0` or `email.as_ref()`). You must manually implement `#[serde(transparent)]` just to make JSON output look normal.
+*   **Constraints**: You cannot easily perform complex relational `JOIN` operations across pure Domain entities without leaking database-specific knowledge into the Domain layer, forcing you to map massive nested tuple structures by hand.
+*   **Best Practices**: 
+    1. Implement the **Expand/Contract Migration Pattern**. Phase 1: Add the new column (Expand). Phase 2: Deploy code that writes to both columns. Phase 3: Deploy code that reads only from the new column. Phase 4: Drop the old column (Contract).
+    2. Liberally use the `derive_more` crate to auto-generate `Display`, `From`, and `Deref` traits for your Newtypes to reduce boilerplate friction.

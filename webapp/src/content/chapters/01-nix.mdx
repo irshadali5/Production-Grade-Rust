@@ -120,3 +120,15 @@ sequenceDiagram
 ```
 
 If it compiles on Developer A's laptop, it is mathematically proven to compile exactly the same way on Developer B's laptop and on the Production CI/CD server. We have completely eradicated "It works on my machine" from the engineering lifecycle.
+
+# 5. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Nix provides absolute purity at the cost of extreme developer friction and complexity.
+
+*   **Edge Cases**: Proprietary, pre-compiled binaries (like older versions of CUDA or obscure enterprise drivers) often fail to run in the Nix sandbox because they contain hardcoded paths to `/usr/lib`. You must use `patchelf` to physically rewrite the binary headers to point to `/nix/store` hashes.
+*   **Tradeoffs (Purity vs. Friction)**: The Nix language is notoriously difficult to learn, featuring lazy evaluation and a lack of static typing. Furthermore, IDEs (like VS Code or `rust-analyzer`) often struggle to find standard libraries because they do not exist in `/usr/bin`. You must explicitly integrate your IDE with the Nix environment.
+*   **Constraints**: Disk Space. Because every minor change generates a completely new cryptographic hash in the `/nix/store`, your hard drive will rapidly fill up with gigabytes of immutable dependencies. 
+*   **Best Practices**: 
+    1. Always use `direnv`. It hooks into your bash/zsh shell and automatically loads the Nix Flake environment the second you `cd` into the directory, making the IDE experience seamless.
+    2. Regularly run `nix-collect-garbage -d` to delete unreferenced derivations and reclaim disk space.

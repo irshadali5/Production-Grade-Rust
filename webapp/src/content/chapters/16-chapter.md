@@ -63,3 +63,34 @@ After a designated timeout (e.g., 30 seconds), the Circuit Breaker enters a **Ha
 We eliminate this using **Exponential Backoff with Cryptographic Jitter**. Instead of retrying every 1 second, we double the delay mathematically: 1s, 2s, 4s, 8s, 16s. This exponential decay prevents the database from being overwhelmed.
 
 Crucially, if 1,000 Kubernetes Pods all crashed at exactly 12:00:00, they will all retry at exactly 12:00:01, 12:00:03, etc., still creating synchronized spikes. We break this synchronization by injecting **Jitter**. We use a cryptographically secure random number generator to apply variance to the backoff duration (e.g., 1.1s, 2.8s, 4.2s). By randomizing the retry intervals across the cluster, we physically scatter the network load, ensuring the database receives a smooth, manageable stream of recovery traffic.
+
+```mermaid
+flowchart TD
+    subgraph Without Jitter (Thundering Herd)
+      C1[Crash 12:00] --> R1[Retry 12:01]
+      C2[Crash 12:00] --> R2[Retry 12:01]
+      C3[Crash 12:00] --> R3[Retry 12:01]
+      R1 --> DB1[(Database Dies)]
+      R2 --> DB1
+      R3 --> DB1
+    end
+    
+    subgraph With Cryptographic Jitter
+      JC1[Crash 12:00] --> JR1[Retry 12:01.2s]
+      JC2[Crash 12:00] --> JR2[Retry 12:01.8s]
+      JC3[Crash 12:00] --> JR3[Retry 12:02.1s]
+      JR1 --> DB2[(Database Survives)]
+      JR2 --> DB2
+      JR3 --> DB2
+    end
+```
+
+## 4. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Failing fast preserves server health but guarantees an immediate degradation of the user experience.
+
+*   **Edge Cases**: The Flapping Circuit. If the database latency is hovering right at the failure threshold (e.g., 1.99s to 2.01s), the Circuit Breaker will rapidly oscillate between Open and Closed states. This causes wildly unpredictable user experiences. You must configure the failure threshold conservatively (e.g., 5 consecutive failures, not just 1).
+*   **Tradeoffs (Fail-Fast vs. Retry)**: By failing instantly when the circuit is Open, you preserve server RAM and CPU, but you immediately return a 503 error to the user. You are explicitly trading the user experience (showing an error screen) for infrastructural survival.
+*   **Constraints**: Distributed State. Circuit breakers (using the `tower` crate) maintain their state locally within the physical Rust process. If you have 50 Kubernetes pods, Pod A might trip its circuit into the Open state, while Pod B is still Closed and bombarding the database.
+*   **Best Practices**: Use a centralized distributed circuit breaker (via Redis/Garnet) *only* if absolutely necessary. Otherwise, let each Pod manage its own local health checks. Local circuit breakers act independently, preventing a centralized Redis failure from accidentally opening the circuits across the entire global cluster.

@@ -44,6 +44,19 @@ This book relies on the 2026 Rust ecosystem. All code examples target **Rust 1.9
 
 ## 6. What Will You Achieve?
 
+```mermaid
+flowchart TD
+    A[Hyperscale Architecture] --> B(API Gateways)
+    A --> C(Serverless Runtimes)
+    A --> D(Zero-Copy Networking)
+    A --> E(Distributed Systems)
+    
+    B -.-> B1[Millions of Connections]
+    C -.-> C1[WASI & MicroVMs]
+    D -.-> D1[io_uring Kernel Bypass]
+    E -.-> E1[Raft Consensus]
+```
+
 By intensely focusing on and finishing this book, you will undergo a paradigm shift in how you view software. You will no longer see "web requests"; you will see electron pulses moving through network interface cards, crossing kernel boundaries, and mutating state in mathematically verified memory. 
 
 You will possess the capability to architect:
@@ -60,3 +73,13 @@ To run the examples in this book locally, you will need:
 - **eBPF dependencies**: Clang, LLVM, and a Linux kernel version 6.1 or higher for `aya` support.
 - **Docker / Testcontainers**: For running local databases and isolation environments.
 - **Performance Profilers**: Linux `perf` and `valgrind`.
+
+## 8. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Building hyperscale systems requires sacrificing developer velocity. Do not apply these patterns prematurely.
+
+*   **Edge Cases**: Hardware failure at the extreme limits. When pushing 10 million requests per second, you will encounter cosmic ray bit-flips in RAM and undocumented silicon bugs. These require error-correcting codes (ECC memory) and software-level checksums.
+*   **Tradeoffs (Velocity vs. Execution Speed)**: Designing an application with `io_uring`, eBPF, and lock-free data structures will take 10x longer to develop than a standard MVC web application in Ruby or Python. You are trading expensive human developer time for highly optimized hardware execution time.
+*   **Constraints**: Cognitive load. The learning curve for this stack is immense. It requires a team of elite engineers who deeply understand both the Linux kernel and Rust's strict compiler rules.
+*   **Best Practices**: Standardize first, optimize second. Build your application using standard Axum and Postgres. Only reach for MicroVMs, eBPF, and SIMD hardware acceleration when you have cryptographic proof (via Flamegraphs) that your standard architecture is failing under load.

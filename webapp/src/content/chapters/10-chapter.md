@@ -51,6 +51,25 @@ Cache Coherence is maintained by the hardware using the MESI (Modified, Exclusiv
 
 This introduces **False Sharing**. If two completely independent atomic variables reside in the same 64-byte struct padding, Thread A and Thread B will continuously invalidate each other's L1 caches, causing the Cache Line to violently bounce across the physical ring bus. We eliminate this by using the `#[repr(align(64))]` attribute in Rust, forcing the compiler to space the atomics across different physical cache lines.
 
+```mermaid
+flowchart TD
+    subgraph Core 1 L1 Cache
+      CL1[Cache Line: 64 Bytes]
+    end
+    subgraph Core 2 L1 Cache
+      CL2[Cache Line: 64 Bytes]
+    end
+    
+    ThreadA[Thread A writes 'reads'] --> CL1
+    ThreadB[Thread B writes 'writes'] --> CL2
+    
+    CL1 -.->|MESI Invalidate Broadcast| CL2
+    CL2 -.->|MESI Invalidate Broadcast| CL1
+    
+    %% To prevent this:
+    Note1[Pad with 64 bytes to separate 'reads' and 'writes' into different Cache Lines]
+```
+
 ```rust
 // A lock-free counter structured to avoid False Sharing
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -104,3 +123,15 @@ mod tests {
     }
 }
 ```
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Hardware memory models vary significantly between x86 and ARM architectures.
+
+*   **Edge Cases**: The Combinatorial Explosion. If you write a `loom` test involving 3 threads that execute 10 atomic operations each, the number of mathematical permutations is astronomical. `loom` will run for hours or days without finishing. You must bound the state space by keeping lock-free unit tests microscopically small.
+*   **Tradeoffs (Atomics vs. Mutexes)**: Lock-free atomics avoid OS-level thread parking, but they are notoriously difficult to write correctly. Often, a standard `std::sync::Mutex` operating under low contention is actually *faster* than a poorly designed lock-free algorithm suffering from MESI Cache-Line Bouncing.
+*   **Constraints**: Architecture Divergence. Intel x86 CPUs have a strongly-ordered memory model (TSO). ARM CPUs (like AWS Graviton) have a weakly-ordered memory model. Code that uses `Ordering::Relaxed` might accidentally work on x86 because the hardware is forgiving, but will violently crash on ARM due to instruction reordering.
+*   **Best Practices**: 
+    1. **Never write your own lock-free algorithms** unless you have mathematical proof you need them. Use heavily audited crates like `crossbeam` or `dashmap`.
+    2. Only use `loom` to verify the most critical, centralized synchronization primitives in your architecture.

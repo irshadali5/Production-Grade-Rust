@@ -88,9 +88,29 @@ While Actor models perfectly isolate tasks, they introduce a terrifying failure 
 How does a lock-free `DashMap` actually work at the silicon level? It relies on a CPU hardware instruction called **Compare-And-Swap (CAS)** (specifically `CMPXCHG` on x86). 
 Instead of acquiring a OS-level lock (which takes thousands of clock cycles and context switches), the Rust thread reads the current memory value, calculates the new value, and issues a CAS instruction to the physical CPU: *"If the memory value is still exactly X, swap it to Y atomically"*. If another thread mutated the memory in the intervening nanoseconds, the CAS instruction fails. The Rust thread then mathematically spins in a `while` loop (a Spinlock), recalculating and retrying. This bypasses OS context switches entirely, completing in roughly ~15 CPU clock cycles (nanoseconds).
 
+```mermaid
+flowchart TD
+    subgraph Rust Thread (Spinlock)
+      Read[Read Memory: Current = X]
+      Calc[Calculate: New = Y]
+      CAS{CMPXCHG X with Y}
+    end
+    
+    subgraph Hardware
+      Mem[(Physical RAM)]
+    end
+    
+    Read --> Calc
+    Calc --> CAS
+    CAS -- 1. Memory is still X --> Success[Swap successful]
+    CAS -- 2. Memory changed by another thread --> Fail[Swap fails]
+    Fail -.->|Loop Retry| Read
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** You are building an Actor-based trading engine. The code below randomly hangs forever (a Deadlock) under heavy load, even though there are zero `Mutex` locks in the entire codebase. Why?
 
+```rust
 ```rust
 // Broken Architecture
 async fn trade_actor(mut rx: mpsc::Receiver<Order>, tx: mpsc::Sender<Receipt>) {
@@ -102,3 +122,13 @@ async fn trade_actor(mut rx: mpsc::Receiver<Order>, tx: mpsc::Sender<Receipt>) {
 }
 ```
 *Hint: If the `tx` channel is bounded and currently full, `send().await` yields control back to the executor, pausing this actor. If the actor on the other end is also `await`ing to send a message back to THIS actor, neither can proceed. This is an Asynchronous Deadlock. You must use `.try_send()` or architect separate queues for circular workflows.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The Actor Model physically decouples execution, making tracing and debugging exceptionally difficult.
+
+*   **Edge Cases**: The Phantom Disconnect. Mobile clients driving through tunnels will drop TCP packets without sending a formal `FIN` packet. The TCP socket remains technically "open" on the server indefinitely. You must implement Application-Level Ping/Pong heartbeats to physically kill dead Actors, otherwise you will leak thousands of Tokio tasks.
+*   **Tradeoffs (Isolation vs. Memory)**: Spawning a dedicated Tokio task (Actor) and an MPSC channel for every single WebSocket consumes roughly 2KB to 10KB of RAM. Serving 1 million concurrent users requires several Gigabytes of RAM just for the Actor routing overhead.
+*   **Constraints**: Global Broadcasting. If you need to send a single system-wide alert to all 1,000,000 connected users, looping through a `DashMap` and executing `tx.send().await` 1 million times will take several seconds and block the broadcast loop.
+*   **Best Practices**: For global broadcasts, bypass the individual MPSC Actors entirely. Use a centralized `tokio::sync::broadcast` channel that all WebSockets subscribe to directly, allowing the OS and Tokio to multiplex the fan-out efficiently.

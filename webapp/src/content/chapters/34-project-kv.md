@@ -124,6 +124,25 @@ A cluster of 5 Raft nodes was deployed across two physical data centers (DC_A ha
 ## 5. Advanced Mathematical Physics: The `fsync` Flush Latency
 In the WAL code, `self.file.get_mut().sync_data().await` maps to the Linux `fdatasync` syscall. Why is this so slow (often taking 2-10 milliseconds)? Modern SSDs contain their own internal DRAM caches to speed up writes. When you call `write_all`, the data hits the SSD's DRAM, but it is not physically on the NAND flash yet. If the server loses power, the SSD's DRAM is wiped. `fdatasync` physically commands the SSD controller to flush its DRAM onto the NAND gates. This requires charging the floating-gate transistors with precise voltage pulses (a slow, physical process). To achieve hyperscale database speeds, you must implement **Group Commit**. Instead of fsyncing 1,000 times for 1,000 requests, you hold the requests in memory for exactly 1 millisecond, and write all 1,000 requests in a single, massive `fdatasync` operation, vastly optimizing the SSD IOPS.
 
+```mermaid
+flowchart TD
+    subgraph Traditional fsync (Slow)
+      Req1[Req 1] --> OS1(OS Buffer)
+      Req2[Req 2] --> OS2(OS Buffer)
+      OS1 -.->|fsync 1| NAND[(SSD NAND Flash)]
+      OS2 -.->|fsync 2| NAND
+      Note1[2 IOPS consumed]
+    end
+    
+    subgraph Group Commit (Hyperscale)
+      ReqA[Req A] --> Mem[1ms In-Memory Batch Buffer]
+      ReqB[Req B] --> Mem
+      ReqC[Req C] --> Mem
+      Mem -.->|Single fdatasync syscall| NAND2[(SSD NAND Flash)]
+      Note2[1 IOPS consumed for 3+ requests]
+    end
+```
+
 ## 6. The Architect's Challenge
 > **Scenario:** You have a 3-node Raft cluster. Node 1 (Leader) crashes. Node 2 and Node 3 hold an election. Node 2 becomes the new Leader. Two minutes later, Node 1 reboots. It still thinks it is the Leader! It immediately sends an `AppendEntries` RPC to Node 2, commanding it to overwrite its logs. What happens?
 

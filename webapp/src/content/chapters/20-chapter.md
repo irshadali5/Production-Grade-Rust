@@ -45,6 +45,32 @@ Implementing these algorithms in a distributed cluster introduces a massive Race
 
 We eliminate this using **Atomic LUA Scripts**. We write the Token Bucket mathematics as a LUA script and send it to Garnet. Garnet executes LUA scripts in a single, atomic, single-threaded transaction space. The script reads, decrements, and updates the token count entirely inside Garnet's memory, completely blocking all other operations. By combining this atomic execution with Redis TCP pipelining, we guarantee absolute thread safety across 10,000 distributed Rust workers with zero lock contention.
 
+```mermaid
+flowchart TD
+    subgraph Race Condition (Rust Decrement)
+      RustA[Worker A reads 100]
+      RustB[Worker B reads 100]
+      RustA --> WriteA[Worker A writes 99]
+      RustB --> WriteB[Worker B writes 99]
+      Note1[1 token subtracted, 2 requests allowed]
+    end
+    
+    subgraph Atomic LUA Execution
+      Redis[(Garnet/Redis)]
+      LUA[LUA Engine Single-Threaded]
+      WorkerC[Worker C triggers Script]
+      WorkerD[Worker D triggers Script]
+      
+      WorkerC --> Redis
+      WorkerD --> Redis
+      
+      Redis --> LUA
+      LUA -- Locks Memory --> Read1[Reads 100, Writes 99]
+      Read1 --> Read2[Reads 99, Writes 98]
+      Note2[Perfect atomic consistency]
+    end
+```
+
 ```rust
 // src/gateway/rate_limit.rs
 use redis::{Client, Script};
@@ -108,3 +134,13 @@ To achieve physical perfection, you must use the Redis internal `TIME` command (
 > **Scenario:** You implement a strict Token Bucket allowing exactly 10 requests per minute per IP. A sophisticated hacker realizes they can bypass your limit and scrape 50,000 pages per hour, despite the LUA script being mathematically perfect. How are they doing it?
 
 *Hint: IPv6 architecture. Modern ISPs assign home users a `/64` IPv6 subnet, giving a single laptop access to 18,446,744,073,709,551,616 unique IP addresses. The hacker simply rotates their IPv6 address for every single HTTP request. If your rate limiter hashes the full IPv6 string as the key, they will never hit the limit. You must mathematically bit-mask and rate-limit by the `/64` routing prefix for IPv6, while keeping exact matches for IPv4.*
+
+## 8. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> Rate limiting by IP address is fundamentally broken in the era of IPv6 and massive CGNAT (Carrier-Grade NAT) deployments.
+
+*   **Edge Cases**: The Distributed Denial of Wallet (DDoW). A sophisticated attacker slowly drips requests from 50,000 different IPv6 addresses perfectly under the per-IP limit. They avoid IP bans entirely while still burning through your expensive LLM token budget. You must implement user-behavioral and token-cost-based limits, not just HTTP request counts.
+*   **Tradeoffs (LUA Scripts vs. Redis Modules)**: LUA scripts block the entire Redis event loop. While perfectly atomic, complex LUA mathematics will saturate the single-threaded CPU under hyperscale load. Redis Modules (written in C or Rust) execute significantly faster but require compiling and managing native binaries on the Redis server itself, drastically increasing operational complexity.
+*   **Constraints**: Redis Memory Exhaustion. If you track rate limits for 500 million unique IP addresses, the string keys (timestamp and token count) will consume tens of gigabytes of expensive Redis RAM. You must configure strict `EXPIRE` TTLs (Time-To-Live) on all rate-limit keys to allow the OS to gracefully purge inactive users from memory.
+*   **Best Practices**: Always return HTTP `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers. This allows well-behaved automated clients (like B2B partner APIs) to mathematically pace their own internal queues, preventing them from blindly hitting the HTTP 429 wall.

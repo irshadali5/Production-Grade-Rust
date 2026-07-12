@@ -52,6 +52,21 @@ Where does this telemetry data go? Writing gigabytes of structured JSON to a loc
 
 We configure the Rust `tracing-opentelemetry` layer to act as an asynchronous telemetry pipeline. When a Span closes, it is not written to disk. It is pushed into a lock-free memory buffer. A background Tokio thread continuously monitors this buffer. Every 5 seconds, it takes a massive batch of thousands of Spans, compresses them, and exports them directly to an observability backend (like Jaeger, Datadog, or Honeycomb) using the **OTLP (OpenTelemetry Protocol) over gRPC**.
 
+```mermaid
+flowchart LR
+    subgraph Rust Process
+      Span1[Tracing Span]
+      Span2[Tracing Span]
+      Buffer[Lock-Free Memory Buffer]
+      Thread[Tokio Background Thread]
+    end
+    
+    Span1 --> Buffer
+    Span2 --> Buffer
+    Buffer -- Flushed periodically --> Thread
+    Thread -- OTLP over gRPC --> Jaeger[(Jaeger / Honeycomb)]
+```
+
 ```rust
 // src/telemetry.rs
 use tracing_subscriber::{layer::SubscriberExt, Registry, util::SubscriberInitExt};
@@ -87,3 +102,13 @@ pub fn init_telemetry() {
 ```
 
 By transmitting batches via gRPC, we utilize HTTP/2 multiplexing, drastically reducing TCP overhead. The Rust API can process 100,000 requests per second while exporting millions of telemetry spans with negligible impact on CPU or latency, achieving absolute observability at hyperscale.
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Telemetry buffers can cause Out-Of-Memory (OOM) crashes if the downstream observability backend goes offline.
+
+*   **Edge Cases**: The Buffer Overflow. If Jaeger or Honeycomb experiences an outage, the Tokio background thread cannot export its batches via gRPC. The lock-free memory buffer will begin filling with millions of spans. Within minutes, the buffer will exhaust the server's RAM, causing the Linux OOM Killer to brutally terminate your Rust application. You must configure strict buffer limits and enable Load Shedding (dropping spans) when full.
+*   **Tradeoffs (Observability vs. CPU Overhead)**: Generating cryptographically secure 128-bit `trace_id`s, capturing stack traces, and formatting JSON attributes consumes CPU cycles. While negligible at 1,000 req/sec, at 1,000,000 req/sec, the telemetry pipeline alone can consume 30% of your total CPU capacity.
+*   **Constraints**: Blind Spots. Tracing Spans only capture function entry/exit times and explicit attributes. They do not capture the values of local variables within a function unless you explicitly inject them via `tracing::info!(val)`.
+*   **Best Practices**: Do not export 100% of telemetry in production. Implement a **Tail-Based Sampler** at the OpenTelemetry Collector level. Configure it to silently drop 99% of successful HTTP 200 requests, but mathematically guarantee the export of 100% of HTTP 500 errors and requests that take longer than 2 seconds (latency outliers).

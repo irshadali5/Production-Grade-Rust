@@ -44,6 +44,26 @@ If Microservice A and Microservice B use static, long-lived Private Keys to deri
 
 We completely eliminate this vulnerability by enforcing **Perfect Forward Secrecy (PFS)**. Our Rust microservices never use static keys for encryption. They generate completely new, **Ephemeral Elliptic Curve Keypairs (ECDHE)** for *every single network session*.
 
+```mermaid
+flowchart TD
+    subgraph Static Key Vulnerability
+      Static[Static Private Key] --> Session1(Session 1: Year 2020)
+      Static --> Session2(Session 2: Year 2021)
+      Attacker1[Attacker records ciphertext] -.-> Session1
+      Attacker2[Attacker steals Static Key in 2025] --> Static
+      Attacker2 -.->|Decrypts all history| Session1
+    end
+    
+    subgraph Perfect Forward Secrecy
+      Eph1[Ephemeral Key 1] --> S1(Session 1)
+      Eph2[Ephemeral Key 2] --> S2(Session 2)
+      S1 -.->|Session Ends| Drop1[Key Zeroized from RAM]
+      S2 -.->|Session Ends| Drop2[Key Zeroized from RAM]
+      Attacker3[Attacker steals server RAM in 2025] --> Drop1
+      Attacker3 -.->|Finds nothing, cannot decrypt| S1
+    end
+```
+
 ```rust
 // src/crypto/ecdh.rs
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -85,3 +105,13 @@ Why this specific prime? Generating keys requires heavy modular arithmetic. By c
 > **Scenario:** Two microservices perfectly execute the ECDHE handshake and establish a Shared Secret. They use this secret to encrypt the payload using AES-GCM. However, a malicious Man-In-The-Middle (MITM) attacker manages to completely hijack the connection and decrypt the payload in real-time. How did they bypass the unbreakable ECDH math?
 
 *Hint: ECDH provides secure key exchange, but it provides **zero authentication**. The MITM attacker intercepted Alice's Public Key, replaced it with their own, and sent it to Bob. Bob established a perfect encrypted tunnel... with the attacker. To prevent this, the Public Keys must be cryptographically signed by a trusted Certificate Authority (CA) via RSA or ECDSA (this is how TLS certificates work) before the Diffie-Hellman exchange occurs.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Generating Ephemeral Keys for every microservice request introduces massive CPU overhead.
+
+*   **Edge Cases**: Replay Attacks. If an attacker intercepts the encrypted ciphertext payload, they cannot decrypt it, but they *can* blindly resend the exact same encrypted packet to the server a thousand times (e.g., triggering a "Transfer $50" command 1,000 times). The decrypted payload must internally contain a cryptographic nonce or strict timestamp to reject historical replays.
+*   **Tradeoffs (CPU Overhead vs. PFS)**: Generating a completely new Ephemeral Elliptic Curve Keypair for every single network session adds significant mathematical overhead. At 100,000 requests per second, you are trading billions of CPU cycles for the absolute guarantee of Perfect Forward Secrecy.
+*   **Constraints**: The Entropy Pool Exhaustion. Generating mathematically secure private keys requires raw, physical randomness (entropy) from the OS kernel (`/dev/urandom`). In highly constrained environments (like Alpine Linux containers immediately upon boot), the kernel's entropy pool can physically exhaust, causing the key generation to block indefinitely until hardware interrupts generate more randomness.
+*   **Best Practices**: Implement Authenticated Encryption with Associated Data (AEAD) using `ChaCha20-Poly1305` instead of `AES-GCM` on architectures (like older ARM chips) that lack dedicated hardware AES acceleration instructions. This ensures maximum encryption throughput without compromising cryptographic integrity.

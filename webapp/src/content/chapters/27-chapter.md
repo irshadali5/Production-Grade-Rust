@@ -14,6 +14,26 @@ This recursive traversal introduces the most devastating performance bottleneck 
 
 If the `posts` resolver executes a standard SQL query (`SELECT * FROM posts WHERE user_id = $1`), the server will execute 100 separate, sequential SQL queries. If the query requested comments on those posts, it would trigger 10,000 queries. A single HTTP request will instantly exhaust the Postgres connection pool and crash the database.
 
+```mermaid
+flowchart TD
+    subgraph GraphQL N+1 Query Problem
+      AST[GraphQL Engine] --> U[users resolver]
+      U -->|Query 1| DB[(Postgres)]
+      U -.->|Returns 100 Users| AST
+      
+      AST --> P1[posts resolver User 1]
+      AST --> P2[posts resolver User 2]
+      AST --> PN[posts resolver User 100]
+      
+      P1 -->|Query 2| DB
+      P2 -->|Query 3| DB
+      PN -->|Query 101| DB
+    end
+    
+    %% Result: 101 Sequential Queries for 1 HTTP Request
+    DB -.-> Crash[Connection Pool Exhausted]
+```
+
 ## 3. The Dataloader Batching Algorithm
 
 We eliminate the N+1 problem mathematically using the **Dataloader Pattern**. A Dataloader acts as an asynchronous queue and deduplicator. When the 100 `posts` resolvers are invoked, they do **not** execute SQL queries. Instead, each resolver pushes its `user_id` into the Dataloader's memory queue and immediately returns a `Future`.
@@ -92,3 +112,13 @@ If you use the `IN` clause, your SQL string dynamically changes length depending
 > **Scenario:** Your Dataloader accepts a batch of 50 `user_ids`. It executes the `ANY($1)` query. The query returns 45 records (5 users have zero posts). The Dataloader pushes the 45 records back. However, the GraphQL engine panics and crashes the request. Why?
 
 *Hint: The `dataloader` crate expects a mathematically strict 1-to-1 mapping. If the executor pauses 50 Futures, you must wake exactly 50 Futures. If you only return a `HashMap` with 45 keys, the remaining 5 Futures will wait for data that never arrives, hanging the entire GraphQL request forever. Your Dataloader MUST explicitly return an empty `Vec<Post>` for the missing keys by inserting default empty arrays into the HashMap before returning it.*
+
+## 7. Architectural Tradeoffs & Edge Cases
+
+> [!WARNING]
+> Dataloaders optimize query count, but they can easily trigger OOM panics if pagination is ignored.
+
+*   **Edge Cases**: The Memory Pagination Explosion. If a GraphQL query requests a 1-to-many relationship (Users -> Posts), the Dataloader might fetch 50 users, and each user might have 1,000 posts. The final SQL batch query fetches 50,000 rows into the Rust memory allocator at once, triggering an OOM panic. Dataloaders must enforce strict window-function based pagination (`ROW_NUMBER() OVER`) inside the batch SQL query itself.
+*   **Tradeoffs (Latency vs. Throughput)**: Dataloaders work by intentionally pausing execution to collect multiple IDs. If you set the `delay` to 10ms, a single fast request will artificially wait 10ms for other requests to arrive before executing the query. You trade single-request latency for massive systemic throughput.
+*   **Constraints**: The Missing Key Panic. If the `dataloader` queue contains 50 unique IDs, the batch SQL query MUST return a mapping for exactly 50 IDs. If 5 records were deleted from the database and the query only returns 45 records, the remaining 5 GraphQL resolvers will hang infinitely waiting for data that never arrives. The Dataloader must explicitly map missing keys to `None` or empty arrays.
+*   **Best Practices**: Use `DashMap` or thread-local caches for the Dataloader layer to prevent cross-request cache bleeding, ensuring that User A's GraphQL execution cannot accidentally pull unauthorized cached database records belonging to User B's execution context.

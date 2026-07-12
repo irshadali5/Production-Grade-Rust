@@ -10,6 +10,23 @@ A staggering percentage of senior engineers incorrectly believe that a Docker co
 
 Because every container on a Node shares the exact same Linux kernel, a vulnerability in the kernel is fatal for the entire cluster. If a hacker exploits a Zero-Day vulnerability in the kernel's memory management subsystem from inside a container, they can shatter the `namespaces` illusion, escape the container, and achieve root access on the physical host machine, instantly compromising every other container on that Node.
 
+```mermaid
+flowchart TD
+    subgraph Host Machine (Bare Metal)
+      HostKernel[Shared Linux Kernel]
+      HostRoot[Host Filesystem & Root Access]
+    end
+    
+    subgraph Docker Container
+      Namespaces[cgroups & namespaces]
+      AppProcess[App Process]
+    end
+    
+    AppProcess -->|1. Exploits Kernel Zero-Day| HostKernel
+    HostKernel -->|2. Shatters Namespace Illusion| HostRoot
+    HostRoot -.->|3. Full Machine Compromise| HostRoot
+```
+
 ## 2. The Attack Surface of Base Images
 
 When you deploy a Rust application using a standard `ubuntu:latest` or `debian:bullseye` base image, you are packing a massive attack surface into your container. These images contain a full filesystem complete with package managers (`apt`), shells (`bash`), and network utilities (`curl`, `wget`).
@@ -69,3 +86,13 @@ CMD ["/api"]
 When compiling for `musl`, the Rust compiler (and the `mold` linker) physically copy the actual machine code for all necessary C functions directly into your final ELF (Executable and Linkable Format) binary. The resulting binary is completely self-contained; it relies on absolutely zero external files. It communicates directly with the Linux kernel via raw system calls.
 
 When this statically linked binary is placed inside an empty `scratch` image, it boots flawlessly. You have created an impenetrable mathematical fortress. If an attacker achieves RCE, they are trapped in a vacuum. There is no shell to spawn, no tools to leverage, and no filesystem to navigate. You have reduced the OS-level attack surface to absolute zero.
+
+## 5. Architectural Tradeoffs & Edge Cases
+
+> [!CAUTION]
+> The `musl` C-library handles DNS resolution fundamentally differently than `glibc`.
+
+*   **Edge Cases**: DNS Resolution Glitches. `musl` has historically struggled with TCP DNS queries, large DNS responses, and complex IPv6 configurations. If your Rust application relies heavily on querying external APIs with round-robin DNS, you may experience mysterious network timeouts.
+*   **Tradeoffs (Isolation vs. Binary Size)**: Statically linking all dependencies (especially heavy C/C++ libraries like OpenSSL) creates massive binaries (often >50MB). You must strip the binary (`strip = true` in `Cargo.toml`) and use Link-Time Optimization (LTO) to keep the container size manageable.
+*   **Constraints**: C-ABI Incompatibility. Certain high-performance crates rely on proprietary C libraries (like Oracle DB drivers or closed-source media codecs) that refuse to compile against `musl`. You physically cannot use them in a `scratch` image.
+*   **Best Practices**: Use `rustls` (a pure-Rust TLS implementation) instead of `openssl` (which requires `pkg-config` and C bindings). This completely eliminates C-dependency linking nightmares and compiles perfectly to the `musl` target out of the box.
